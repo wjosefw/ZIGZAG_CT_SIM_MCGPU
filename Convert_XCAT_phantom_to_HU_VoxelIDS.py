@@ -5,10 +5,10 @@ from pathlib import Path
 
 import numpy as np
 
-from utils import hu_to_density_schneider, parse_xcat_log
+from utils import load_schneider_materials, parse_xcat_log
 
 
-def main(input_path, log_path, output_path=None, output_voxel_path=None, n_bins=15):
+def main(input_path, log_path, output_path=None, output_voxel_path=None, n_partitions=3):
     input_path = Path(input_path)
     log_path = Path(log_path)
     output_path = Path(output_path) if output_path else input_path.with_name(input_path.stem + "_HU.bin")
@@ -43,11 +43,29 @@ def main(input_path, log_path, output_path=None, output_voxel_path=None, n_bins=
 
     print(f"HU min/max: {CT_HU.min():.6g} / {CT_HU.max():.6g}")
 
-    # Map HU -> voxelId (0-255) using same binning as Generate_material_list
-    hu_start, hu_end = -1000, 2995
-    # Linear mapping: voxelId = (HU - hu_start) / (hu_end - hu_start) * (n_bins - 1)
-    voxel_ids = (CT_HU - hu_start) / (hu_end - hu_start) * (n_bins - 1)
-    voxel_ids = np.clip(np.rint(voxel_ids), 0, 255).astype(np.uint8)
+    # Map HU -> voxelId using same per-section partitioning as Generate_material_list
+    schneider = load_schneider_materials()
+    hu_sections = schneider["hu_material_sections"]
+    n_sections = len(hu_sections) - 1
+
+    # Assign voxelId by finding which subsection each HU falls into
+    # Each section is split into n_partitions equal-width subsections
+    voxel_ids = np.zeros(CT_HU.shape, dtype=np.int32)
+    for section_idx in range(n_sections):
+        hu_lo = float(hu_sections[section_idx])
+        hu_hi = float(hu_sections[section_idx + 1])
+        sub_edges = np.linspace(hu_lo, hu_hi, n_partitions + 1)
+        for j in range(n_partitions):
+            lo = sub_edges[j]
+            hi = sub_edges[j + 1]
+            if j < n_partitions - 1:
+                mask = (CT_HU >= lo) & (CT_HU < hi)
+            else:
+                # Last subsection includes the upper boundary
+                mask = (CT_HU >= lo) & (CT_HU <= hi)
+            voxel_ids[mask] = section_idx * n_partitions + j
+
+    voxel_ids = np.clip(voxel_ids, 0, 255).astype(np.uint8)
 
     print(f"VoxelId min/max: {voxel_ids.min()} / {voxel_ids.max()}")
     print(f"Unique voxelIds used: {len(np.unique(voxel_ids))}")
@@ -68,6 +86,6 @@ if __name__ == "__main__":
     parser.add_argument("--log", type=Path, required=True, help="Path to the XCAT log file")
     parser.add_argument("--output-hu", type=Path, default=None, help="Output path for int16 HU file (default: <input_dir>/<stem>_HU.bin)")
     parser.add_argument("--output-voxel", type=Path, default=None, help="Output path for uint8 voxelId file (default: <input_dir>/<stem>_voxelId.bin)")
-    parser.add_argument("--n-bins", type=int, default=15, help="Number of HU bins (default: 15)")
+    parser.add_argument("--n-partitions", type=int, default=3, help="Number of partitions per HU section (default: 3)")
     args = parser.parse_args()
-    main(args.input, args.log, output_path=args.output_hu, output_voxel_path=args.output_voxel, n_bins=args.n_bins)
+    main(args.input, args.log, output_path=args.output_hu, output_voxel_path=args.output_voxel, n_partitions=args.n_partitions)
