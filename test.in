@@ -1,0 +1,154 @@
+
+# 
+# >>>> INPUT FILE FOR MC-GPU v1.5 VICTRE-DBT >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+#                
+#  This input file simulates a mammogram of a compressed heterogeneously dense breast phantom.
+#  To get simulation results fast (about 5min), the  number of histories (x-ray exposure) has been set to 1% of the number of x ray estimated for a standard mammogram in this simulation conditions.
+#  Make sure that the folder "results" exists before starting the simulation.
+#
+#  Main acquistion parameters: 
+#     - Source-to-detector distance 65 cm. 
+#     - Pixel size 85 micron (= 25.5 cm / 3000 pixels)
+#     - Antiscatter grid in use; no motion blur.
+#     - Breast phantom must be generated using C. Graff's software (hardcoded conversion from binary voxel value to material and density)
+#        -- It is ok to reduce the number of histories for testing the code!
+#        -- Number of histories computed to match the air kerma measured with the real system at the center of a PMMA phantom of equivalent thickness.
+#        -- Number of histotries must be re-calculated if the energy spectrum or beam aperture (field size) are changed.
+#
+#                      [Andreu Badal, 2019-08-26]
+#
+
+#[SECTION SIMULATION CONFIG v.2009-05-12]
+1.7e9                        # Simulating only 10% of the expected mammo exposure for testing!    ORIGINAL HISTORIES:  1.7e11                         # TOTAL NUMBER OF HISTORIES, OR SIMULATION TIME IN SECONDS IF VALUE < 100000
+131415990            # RANDOM SEED (ranecu PRNG)
+10                               # GPU NUMBER TO USE WHEN MPI IS NOT USED, OR TO BE AVOIDED IN MPI RUNS
+128                             # GPU THREADS PER CUDA BLOCK (multiple of 32)
+5000                          # SIMULATED HISTORIES PER GPU THREAD
+ 
+#[SECTION SOURCE v.2016-12-02]
+spectrum/100kVp_0.8mmAl.spc # X-RAY ENERGY SPECTRUM FILE
+ 23  200   93           # SOURCE POSITION: X (chest-to-nipple), Y (right-to-left), Z (caudal-to-cranial) [cm]
+ 0.0    -1.0    0.0             # SOURCE DIRECTION COSINES: U V W
+-90    -90    # ==> 2/3 original angle of 11.203       # TOTAL AZIMUTHAL (WIDTH, X) AND POLAR (HEIGHT, Z) APERTURES OF THE FAN BEAM [degrees] (input negative to automatically cover the whole detector)
+0   0  180             # EULER ANGLES (RzRyRz) TO ROTATE RECTANGULAR BEAM FROM DEFAULT POSITION AT Y=0, NORMAL=(0,-1,0)
+ 0.0300                      # SOURCE GAUSSIAN FOCAL SPOT FWHM [cm]
+ 0.0                              # 0.18 for DBT, 0 for FFDM [Mackenzie2017]     # ANGULAR BLUR DUE TO MOVEMENT ([exposure_time]*[angular_speed]) [degrees]
+NO                             # COLLIMATE BEAM TOWARDS POSITIVE AZIMUTHAL (X) ANGLES ONLY? (ie, cone-beam center aligned with chest wall in mammography) [YES/NO]
+ 
+#[SECTION IMAGE DETECTOR v.2017-06-20]
+results/test_results    # OUTPUT IMAGE FILE NAME
+256   1024                  # NUMBER OF PIXELS IN THE IMAGE: Nx Nz
+100   400                 # IMAGE SIZE (width, height): Dx Dz [cm]
+350.00                           # SOURCE-TO-DETECTOR DISTANCE (detector set in front of the source, perpendicular to the initial direction)
+ 0.0    0.0                     # IMAGE OFFSET ON DETECTOR PLANE IN WIDTH AND HEIGHT DIRECTIONS (BY DEFAULT BEAM CENTERED AT IMAGE CENTER) [cm]
+ 0.0200                         # DETECTOR THICKNESS [cm]
+ 0.004027  # ==> MFP(Se,19.0keV)   # DETECTOR MATERIAL MEAN FREE PATH AT AVERAGE ENERGY [cm]
+ 12658.0 11223.0 0.596 0.00593  # DETECTOR K-EDGE ENERGY [eV], K-FLUORESCENCE ENERGY [eV], K-FLUORESCENCE YIELD, MFP AT FLUORESCENCE ENERGY [cm]
+ 50.0    0.99                   # EFECTIVE DETECTOR GAIN, W_+- [eV/ehp], AND SWANK FACTOR (input 0 to report ideal energy fluence)
+ 5200.0                         # ADDITIVE ELECTRONIC NOISE LEVEL (electrons/pixel)
+ 0.10  1.9616          # ==> MFP(polystyrene,19keV)       # PROTECTIVE COVER THICKNESS (detector+grid) [cm], MEAN FREE PATH AT AVERAGE ENERGY [cm]
+ 5.0   31.0   0.0065            # ANTISCATTER GRID RATIO, FREQUENCY, STRIP THICKNESS [X:1, lp/cm, cm] (enter 0 to disable the grid)
+ 0.00089945   1.9616   # ==> MFP(lead&polystyrene,19keV)  # ANTISCATTER STRIPS AND INTERSPACE MEAN FREE PATHS AT AVERAGE ENERGY [cm]
+ 0                              # ORIENTATION 1D FOCUSED ANTISCATTER GRID LINES: 0==STRIPS PERPENDICULAR LATERAL DIRECTION (mammo style); 1==STRIPS PARALLEL LATERAL DIRECTION (DBT style)
+
+#[SECTION TOMOGRAPHIC TRAJECTORY v.2016-12-02]
+1      # ==> 1 for mammo only; ==> 25 for mammo + DBT    # NUMBER OF PROJECTIONS (1 disables the tomographic mode)
+60.0                            # SOURCE-TO-ROTATION AXIS DISTANCE
+90          # ANGLE BETWEEN PROJECTIONS (360/num_projections for full CT) [degrees]
+0                           # ANGULAR ROTATION TO FIRST PROJECTION (USEFUL FOR DBT, INPUT SOURCE DIRECTION CONSIDERED AS 0 DEGREES) [degrees]
+0.0  0.0  1.0                  # AXIS OF ROTATION (Vx,Vy,Vz)
+ 0.0                            # TRANSLATION ALONG ROTATION AXIS BETWEEN PROJECTIONS (HELICAL SCAN) [cm]
+YES                             # KEEP DETECTOR FIXED AT 0 DEGREES FOR DBT? [YES/NO]
+YES                             # SIMULATE BOTH 0 deg PROJECTION AND TOMOGRAPHIC SCAN (WITHOUT GRID) WITH 2/3 TOTAL NUM HIST IN 1st PROJ (eg, DBT+mammo)? [YES/NO]
+
+#[SECTION DOSE DEPOSITION v.2012-12-12]
+YES                             # TALLY MATERIAL DOSE? [YES/NO] (electrons not transported, x-ray energy locally deposited at interaction)
+NO                              # TALLY 3D VOXEL DOSE? [YES/NO] (dose measured separately for each voxel)
+mc-gpu_dose.dat                 # OUTPUT VOXEL DOSE FILE NAME
+  1 1280                        # VOXEL DOSE ROI: X-index min max (first voxel has index 1)
+  1 1950                        # VOXEL DOSE ROI: Y-index min max
+470  470                        # VOXEL DOSE ROI: Z-index min max
+ 
+#[SECTION VOXELIZED GEOMETRY FILE v.2017-07-26]
+XCAT/whole_body_phantom_atn_1_voxelId.bin    
+ 0.0    0.0    0.0              # OFFSET OF THE VOXEL GEOMETRY (DEFAULT ORIGIN AT LOWER BACK CORNER) [cm]
+ 150   150   600              # NUMBER OF VOXELS: INPUT A 0 TO READ ASCII FORMAT WITH HEADER SECTION, RAW VOXELS WILL BE READ OTHERWISE
+ 0.3125 0.3125 0.3125     # VOXEL SIZES [cm]
+ 1 1 1                        # SIZE OF LOW RESOLUTION VOXELS THAT WILL BE DESCRIBED BY A BINARY TREE, GIVEN AS POWERS OF TWO (eg, 2 2 3 = 2^2x2^2x2^3 = 128 input voxels per low res voxel; 0 0 0 disables tree)
+ 
+#[SECTION MATERIAL FILE LIST v.2009-11-30]
+MC-GPU_materials/MATERIAL1_5_150keV.mcgpu     density=0.0210     voxelId=0       #    1th MATERIAL FILE
+MC-GPU_materials/MATERIAL1_5_150keV.mcgpu     density=0.0393     voxelId=1       #    2th MATERIAL FILE
+MC-GPU_materials/MATERIAL1_5_150keV.mcgpu     density=0.0579     voxelId=2       #    3th MATERIAL FILE
+MC-GPU_materials/MATERIAL2_5_150keV.mcgpu     density=0.1963     voxelId=3       #    4th MATERIAL FILE
+MC-GPU_materials/MATERIAL2_5_150keV.mcgpu     density=0.4700     voxelId=4       #    5th MATERIAL FILE
+MC-GPU_materials/MATERIAL2_5_150keV.mcgpu     density=0.7438     voxelId=5       #    6th MATERIAL FILE
+MC-GPU_materials/MATERIAL3_5_150keV.mcgpu     density=0.8635     voxelId=6       #    7th MATERIAL FILE
+MC-GPU_materials/MATERIAL3_5_150keV.mcgpu     density=0.8754     voxelId=7       #    8th MATERIAL FILE
+MC-GPU_materials/MATERIAL3_5_150keV.mcgpu     density=0.8866     voxelId=8       #    9th MATERIAL FILE
+MC-GPU_materials/MATERIAL4_5_150keV.mcgpu     density=0.9030     voxelId=9       #   10th MATERIAL FILE
+MC-GPU_materials/MATERIAL4_5_150keV.mcgpu     density=0.9127     voxelId=10      #   11th MATERIAL FILE
+MC-GPU_materials/MATERIAL4_5_150keV.mcgpu     density=0.9224     voxelId=11      #   12th MATERIAL FILE
+MC-GPU_materials/MATERIAL5_5_150keV.mcgpu     density=0.9374     voxelId=12      #   13th MATERIAL FILE
+MC-GPU_materials/MATERIAL5_5_150keV.mcgpu     density=0.9472     voxelId=13      #   14th MATERIAL FILE
+MC-GPU_materials/MATERIAL5_5_150keV.mcgpu     density=0.9569     voxelId=14      #   15th MATERIAL FILE
+MC-GPU_materials/MATERIAL6_5_150keV.mcgpu     density=0.9706     voxelId=15      #   16th MATERIAL FILE
+MC-GPU_materials/MATERIAL6_5_150keV.mcgpu     density=0.9804     voxelId=16      #   17th MATERIAL FILE
+MC-GPU_materials/MATERIAL6_5_150keV.mcgpu     density=0.9902     voxelId=17      #   18th MATERIAL FILE
+MC-GPU_materials/MATERIAL7_5_150keV.mcgpu     density=1.0007     voxelId=18      #   19th MATERIAL FILE
+MC-GPU_materials/MATERIAL7_5_150keV.mcgpu     density=1.0043     voxelId=19      #   20th MATERIAL FILE
+MC-GPU_materials/MATERIAL7_5_150keV.mcgpu     density=1.0078     voxelId=20      #   21th MATERIAL FILE
+MC-GPU_materials/MATERIAL8_5_150keV.mcgpu     density=1.0270     voxelId=21      #   22th MATERIAL FILE
+MC-GPU_materials/MATERIAL8_5_150keV.mcgpu     density=1.0431     voxelId=22      #   23th MATERIAL FILE
+MC-GPU_materials/MATERIAL8_5_150keV.mcgpu     density=1.0532     voxelId=23      #   24th MATERIAL FILE
+MC-GPU_materials/MATERIAL9_5_150keV.mcgpu     density=1.0719     voxelId=24      #   25th MATERIAL FILE
+MC-GPU_materials/MATERIAL9_5_150keV.mcgpu     density=1.0788     voxelId=25      #   26th MATERIAL FILE
+MC-GPU_materials/MATERIAL9_5_150keV.mcgpu     density=1.0855     voxelId=26      #   27th MATERIAL FILE
+MC-GPU_materials/MATERIAL10_5_150keV.mcgpu    density=1.0952     voxelId=27      #   28th MATERIAL FILE
+MC-GPU_materials/MATERIAL10_5_150keV.mcgpu    density=1.1086     voxelId=28      #   29th MATERIAL FILE
+MC-GPU_materials/MATERIAL10_5_150keV.mcgpu    density=1.1220     voxelId=29      #   30th MATERIAL FILE
+MC-GPU_materials/MATERIAL11_5_150keV.mcgpu    density=1.1491     voxelId=30      #   31th MATERIAL FILE
+MC-GPU_materials/MATERIAL11_5_150keV.mcgpu    density=1.1661     voxelId=31      #   32th MATERIAL FILE
+MC-GPU_materials/MATERIAL11_5_150keV.mcgpu    density=1.1831     voxelId=32      #   33th MATERIAL FILE
+MC-GPU_materials/MATERIAL12_5_150keV.mcgpu    density=1.2143     voxelId=33      #   34th MATERIAL FILE
+MC-GPU_materials/MATERIAL12_5_150keV.mcgpu    density=1.2315     voxelId=34      #   35th MATERIAL FILE
+MC-GPU_materials/MATERIAL12_5_150keV.mcgpu    density=1.2487     voxelId=35      #   36th MATERIAL FILE
+MC-GPU_materials/MATERIAL13_5_150keV.mcgpu    density=1.2792     voxelId=36      #   37th MATERIAL FILE
+MC-GPU_materials/MATERIAL13_5_150keV.mcgpu    density=1.2966     voxelId=37      #   38th MATERIAL FILE
+MC-GPU_materials/MATERIAL13_5_150keV.mcgpu    density=1.3139     voxelId=38      #   39th MATERIAL FILE
+MC-GPU_materials/MATERIAL14_5_150keV.mcgpu    density=1.3431     voxelId=39      #   40th MATERIAL FILE
+MC-GPU_materials/MATERIAL14_5_150keV.mcgpu    density=1.3606     voxelId=40      #   41th MATERIAL FILE
+MC-GPU_materials/MATERIAL14_5_150keV.mcgpu    density=1.3782     voxelId=41      #   42th MATERIAL FILE
+MC-GPU_materials/MATERIAL15_5_150keV.mcgpu    density=1.4082     voxelId=42      #   43th MATERIAL FILE
+MC-GPU_materials/MATERIAL15_5_150keV.mcgpu    density=1.4259     voxelId=43      #   44th MATERIAL FILE
+MC-GPU_materials/MATERIAL15_5_150keV.mcgpu    density=1.4435     voxelId=44      #   45th MATERIAL FILE
+MC-GPU_materials/MATERIAL16_5_150keV.mcgpu    density=1.4741     voxelId=45      #   46th MATERIAL FILE
+MC-GPU_materials/MATERIAL16_5_150keV.mcgpu    density=1.4919     voxelId=46      #   47th MATERIAL FILE
+MC-GPU_materials/MATERIAL16_5_150keV.mcgpu    density=1.5097     voxelId=47      #   48th MATERIAL FILE
+MC-GPU_materials/MATERIAL17_5_150keV.mcgpu    density=1.5412     voxelId=48      #   49th MATERIAL FILE
+MC-GPU_materials/MATERIAL17_5_150keV.mcgpu    density=1.5592     voxelId=49      #   50th MATERIAL FILE
+MC-GPU_materials/MATERIAL17_5_150keV.mcgpu    density=1.5772     voxelId=50      #   51th MATERIAL FILE
+MC-GPU_materials/MATERIAL18_5_150keV.mcgpu    density=1.6066     voxelId=51      #   52th MATERIAL FILE
+MC-GPU_materials/MATERIAL18_5_150keV.mcgpu    density=1.6248     voxelId=52      #   53th MATERIAL FILE
+MC-GPU_materials/MATERIAL18_5_150keV.mcgpu    density=1.6429     voxelId=53      #   54th MATERIAL FILE
+MC-GPU_materials/MATERIAL19_5_150keV.mcgpu    density=1.6708     voxelId=54      #   55th MATERIAL FILE
+MC-GPU_materials/MATERIAL19_5_150keV.mcgpu    density=1.6890     voxelId=55      #   56th MATERIAL FILE
+MC-GPU_materials/MATERIAL19_5_150keV.mcgpu    density=1.7073     voxelId=56      #   57th MATERIAL FILE
+MC-GPU_materials/MATERIAL20_5_150keV.mcgpu    density=1.7380     voxelId=57      #   58th MATERIAL FILE
+MC-GPU_materials/MATERIAL20_5_150keV.mcgpu    density=1.7564     voxelId=58      #   59th MATERIAL FILE
+MC-GPU_materials/MATERIAL20_5_150keV.mcgpu    density=1.7747     voxelId=59      #   60th MATERIAL FILE
+MC-GPU_materials/MATERIAL21_5_150keV.mcgpu    density=1.8031     voxelId=60      #   61th MATERIAL FILE
+MC-GPU_materials/MATERIAL21_5_150keV.mcgpu    density=1.8216     voxelId=61      #   62th MATERIAL FILE
+MC-GPU_materials/MATERIAL21_5_150keV.mcgpu    density=1.8401     voxelId=62      #   63th MATERIAL FILE
+MC-GPU_materials/MATERIAL22_5_150keV.mcgpu    density=1.8690     voxelId=63      #   64th MATERIAL FILE
+MC-GPU_materials/MATERIAL22_5_150keV.mcgpu    density=1.8876     voxelId=64      #   65th MATERIAL FILE
+MC-GPU_materials/MATERIAL22_5_150keV.mcgpu    density=1.9062     voxelId=65      #   66th MATERIAL FILE
+MC-GPU_materials/MATERIAL23_5_150keV.mcgpu    density=1.9356     voxelId=66      #   67th MATERIAL FILE
+MC-GPU_materials/MATERIAL23_5_150keV.mcgpu    density=1.9542     voxelId=67      #   68th MATERIAL FILE
+MC-GPU_materials/MATERIAL23_5_150keV.mcgpu    density=1.9729     voxelId=68      #   69th MATERIAL FILE
+MC-GPU_materials/MATERIAL24_5_150keV.mcgpu    density=2.1299     voxelId=69      #   70th MATERIAL FILE
+MC-GPU_materials/MATERIAL24_5_150keV.mcgpu    density=2.4199     voxelId=70      #   71th MATERIAL FILE
+MC-GPU_materials/MATERIAL24_5_150keV.mcgpu    density=2.7198     voxelId=71      #   72th MATERIAL FILE
+MC-GPU_materials/MATERIAL25_5_150keV.mcgpu    density=4.5525     voxelId=72      #   73th MATERIAL FILE
+MC-GPU_materials/MATERIAL25_5_150keV.mcgpu    density=4.5525     voxelId=73      #   74th MATERIAL FILE
+MC-GPU_materials/MATERIAL25_5_150keV.mcgpu    density=4.5525     voxelId=74      #   75th MATERIAL FILE
