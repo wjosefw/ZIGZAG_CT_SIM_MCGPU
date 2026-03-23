@@ -110,7 +110,7 @@ def generate_sweeps(template_file, num_sweeps, total_z, z_step,
     n_steps = round(total_z / z_step)
     projections_per_sweep = n_steps + 1
     angle_per_sweep = 360.0 / num_sweeps
-    angle_between = angle_per_sweep / projections_per_sweep
+    angle_between = angle_per_sweep / (projections_per_sweep - 1)
     total_projections = projections_per_sweep * num_sweeps
 
     # --- Print all quantities ---
@@ -132,7 +132,7 @@ def generate_sweeps(template_file, num_sweeps, total_z, z_step,
     print(f"  DERIVED  angle per sweep:   {angle_per_sweep:.6f} deg  "
           f"(360 / {num_sweeps})")
     print(f"  DERIVED  angle between:     {angle_between:.6f} deg  "
-          f"({angle_per_sweep:.2f} / {projections_per_sweep})")
+          f"({angle_per_sweep:.2f} / ({projections_per_sweep} - 1))")
     print(f"  DERIVED  total projections: {total_projections}  "
           f"({projections_per_sweep} x {num_sweeps})")
     print(f"  DERIVED  total rotation:    "
@@ -182,8 +182,8 @@ def generate_sweeps(template_file, num_sweeps, total_z, z_step,
         # Update state for next sweep
         # Z: next sweep starts at the LAST projection's Z (overlap at boundary)
         cumulative_z += (n_proj - 1) * current_translation
-        # Angle: next sweep starts one step after the last projection
-        cumulative_angle += n_proj * angle_between
+        # Angle: next sweep starts at the last projection's angle (overlap)
+        cumulative_angle += (n_proj - 1) * angle_between
         current_translation *= -1  # flip direction
         remaining -= n_proj
         sweep += 1
