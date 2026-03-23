@@ -8,11 +8,12 @@ import numpy as np
 from utils import load_schneider_materials, parse_xcat_log
 
 
-def main(input_path, log_path, output_path=None, output_voxel_path=None, n_partitions=3):
+def main(input_path, log_path, output_path=None, output_voxel_path=None, output_blank_path=None, n_partitions=3):
     input_path = Path(input_path)
     log_path = Path(log_path)
     output_path = Path(output_path) if output_path else input_path.with_name(input_path.stem + "_HU.bin")
     output_voxel_path = Path(output_voxel_path) if output_voxel_path else input_path.with_name(input_path.stem + "_voxelId.bin")
+    output_blank_path = Path(output_blank_path) if output_blank_path else input_path.with_name(input_path.stem + "_blank.bin")
 
     # Read imaging parameters from XCAT log
     xcat = parse_xcat_log(log_path)
@@ -79,6 +80,11 @@ def main(input_path, log_path, output_path=None, output_voxel_path=None, n_parti
     CT_HU_int16.tofile(output_path)
     print(f"Saved int16 HU file to: {output_path}")
 
+    # Save a fully zero phantom of the same shape (for normalization)
+    blank = np.zeros(CT_HU.shape, dtype=np.uint8)
+    blank.tofile(output_blank_path)
+    print(f"Saved blank (all-zero) phantom to: {output_blank_path}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert XCAT attenuation phantom to HU and voxelId maps.")
@@ -86,6 +92,7 @@ if __name__ == "__main__":
     parser.add_argument("--log", type=Path, required=True, help="Path to the XCAT log file")
     parser.add_argument("--output-hu", type=Path, default=None, help="Output path for int16 HU file (default: <input_dir>/<stem>_HU.bin)")
     parser.add_argument("--output-voxel", type=Path, default=None, help="Output path for uint8 voxelId file (default: <input_dir>/<stem>_voxelId.bin)")
+    parser.add_argument("--output-blank", type=Path, default=None, help="Output path for blank (all-zero) phantom file (default: <input_dir>/<stem>_blank.bin)")
     parser.add_argument("--n-partitions", type=int, default=3, help="Number of partitions per HU section (default: 3)")
     args = parser.parse_args()
-    main(args.input, args.log, output_path=args.output_hu, output_voxel_path=args.output_voxel, n_partitions=args.n_partitions)
+    main(args.input, args.log, output_path=args.output_hu, output_voxel_path=args.output_voxel, output_blank_path=args.output_blank, n_partitions=args.n_partitions)
