@@ -22,6 +22,7 @@ import numpy as np
 import glob
 import re
 import os
+import argparse
 
 
 # ---------------------------------------------------------------------------
@@ -156,14 +157,18 @@ def read_raw_projection(filepath, nx, nz):
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+def main(in_root, results_dir, results_root, blank_results_root):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    results_dir = os.path.join(base_dir, "results")
+    results_dir = os.path.join(base_dir, results_dir)
 
-    # Discover sweeps
-    sweep_in_files = sorted(glob.glob(os.path.join(base_dir, "sweep_*.in")))
+    # Discover sweeps: {in_root}_xxxx.in
+    sweep_in_files = sorted(
+        glob.glob(os.path.join(base_dir, f"{in_root}_*.in"))
+    )
     if not sweep_in_files:
-        raise FileNotFoundError("No sweep_*.in files found")
+        raise FileNotFoundError(
+            f"No {in_root}_*.in files found in {base_dir}"
+        )
 
     print(f"Found {len(sweep_in_files)} sweep input files")
 
@@ -171,15 +176,15 @@ def main():
 
     for sweep_file in sweep_in_files:
         sweep_name = os.path.splitext(os.path.basename(sweep_file))[0]
-        sweep_id = sweep_name.replace("sweep_", "")
+        sweep_id = sweep_name.replace(f"{in_root}_", "")
         print(f"\nProcessing {sweep_name}...")
 
         params = parse_in_file(sweep_file)
 
         # Find header files for this sweep (exclude .raw)
-        # Result files use "sweep0000" (no underscore) vs .in files "sweep_0000"
-        sweep_tag = "sweep" + sweep_id
-        pattern = os.path.join(results_dir, f"test_results_{sweep_tag}_*")
+        # sweep_tag uses root without underscore: e.g. "sweep0000"
+        sweep_tag = in_root + sweep_id
+        pattern = os.path.join(results_dir, f"{results_root}_{sweep_tag}_*")
         header_files = sorted(
             f for f in glob.glob(pattern) if not f.endswith(".raw")
         )
@@ -221,7 +226,26 @@ def main():
             )
 
             # Pixel values -- shape (nz, nx)
-            values = read_raw_projection(raw_file, nx, nz)
+            phantom_values = read_raw_projection(raw_file, nx, nz)
+
+            # Find matching blank projection
+            proj_suffix = os.path.basename(header_file).replace(
+                f"{results_root}_{sweep_tag}", ""
+            )
+            blank_header = os.path.join(
+                results_dir, f"{blank_results_root}_{sweep_tag}{proj_suffix}"
+            )
+            blank_raw = blank_header + ".raw"
+            if not os.path.exists(blank_raw):
+                raise FileNotFoundError(
+                    f"Blank raw file not found: {blank_raw}"
+                )
+            blank_values = read_raw_projection(blank_raw, nx, nz)
+
+            # Normalize: attenuation = ln(blank / phantom), clipped to >= 0
+            with np.errstate(divide="ignore", invalid="ignore"):
+                values = np.log(blank_values / phantom_values)
+            values = np.clip(values, 0, None)
 
             # Flatten to (n_pixels, 3) and (n_pixels,)
             det_flat = det_pos.reshape(-1, 3)
@@ -252,4 +276,30 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Build listmode data from MC-GPU simulation results."
+    )
+    parser.add_argument(
+        "--in-root",
+        required=True,
+        help="Root name for input files (e.g. 'sweep' finds sweep_*.in)",
+    )
+    parser.add_argument(
+        "--results-dir",
+        required=True,
+        help="Directory containing the MC-GPU result files",
+    )
+    parser.add_argument(
+        "--results-root",
+        required=True,
+        help="Root name for result files (e.g. 'test_results' finds "
+             "test_results_{sweep_tag}_*)",
+    )
+    parser.add_argument(
+        "--blank-results-root",
+        required=True,
+        help="Root name for blank (air) result files (e.g. 'projection_blank' "
+             "finds projection_blank_{sweep_tag}_*)",
+    )
+    args = parser.parse_args()
+    main(args.in_root, args.results_dir, args.results_root, args.blank_results_root)
