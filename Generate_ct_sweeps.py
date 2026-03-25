@@ -154,7 +154,7 @@ def generate_sweeps(template_file, num_sweeps, total_z, z_step,
 
     while remaining > 0:
         n_proj = min(projections_per_sweep, remaining)
-        sweep_name = f"{base_name}_sweep{sweep:04d}"
+        sweep_name = f"{base_name}_sweep_{sweep:04d}"
         in_filename = f"sweep_{sweep:04d}.in"
         in_filepath = os.path.join(output_dir, in_filename)
 

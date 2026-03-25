@@ -161,30 +161,42 @@ def main(in_root, results_dir, results_root, blank_results_root):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     results_dir = os.path.join(base_dir, results_dir)
 
-    # Discover sweeps: {in_root}_xxxx.in
+    # Discover sweeps: {in_root}_xxxx.in, or fall back to {in_root}.in
     sweep_in_files = sorted(
         glob.glob(os.path.join(base_dir, f"{in_root}_*.in"))
     )
-    if not sweep_in_files:
-        raise FileNotFoundError(
-            f"No {in_root}_*.in files found in {base_dir}"
-        )
 
-    print(f"Found {len(sweep_in_files)} sweep input files")
+    single_mode = False
+    if not sweep_in_files:
+        single_file = os.path.join(base_dir, f"{in_root}.in")
+        if os.path.exists(single_file):
+            sweep_in_files = [single_file]
+            single_mode = True
+            print(f"Found single input file: {in_root}.in")
+        else:
+            raise FileNotFoundError(
+                f"No {in_root}_*.in or {in_root}.in files found in {base_dir}"
+            )
+    else:
+        print(f"Found {len(sweep_in_files)} sweep input files")
 
     all_rows = []
 
     for sweep_file in sweep_in_files:
         sweep_name = os.path.splitext(os.path.basename(sweep_file))[0]
-        sweep_id = sweep_name.replace(f"{in_root}_", "")
+
+        if single_mode:
+            sweep_tag = ""
+        else:
+            sweep_id = sweep_name.replace(f"{in_root}_", "")
+            sweep_tag = f"_{in_root}_{sweep_id}"
+
         print(f"\nProcessing {sweep_name}...")
 
         params = parse_in_file(sweep_file)
 
         # Find header files for this sweep (exclude .raw)
-        # sweep_tag uses root without underscore: e.g. "sweep0000"
-        sweep_tag = in_root + sweep_id
-        pattern = os.path.join(results_dir, f"{results_root}_{sweep_tag}_*")
+        pattern = os.path.join(results_dir, f"{results_root}{sweep_tag}_*")
         header_files = sorted(
             f for f in glob.glob(pattern) if not f.endswith(".raw")
         )
@@ -230,10 +242,10 @@ def main(in_root, results_dir, results_root, blank_results_root):
 
             # Find matching blank projection
             proj_suffix = os.path.basename(header_file).replace(
-                f"{results_root}_{sweep_tag}", ""
+                f"{results_root}{sweep_tag}", ""
             )
             blank_header = os.path.join(
-                results_dir, f"{blank_results_root}_{sweep_tag}{proj_suffix}"
+                results_dir, f"{blank_results_root}{sweep_tag}{proj_suffix}"
             )
             blank_raw = blank_header + ".raw"
             if not os.path.exists(blank_raw):
