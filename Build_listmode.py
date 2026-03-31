@@ -113,7 +113,9 @@ def compute_detector_pixels(source_pos, direction, sdd, width_x, height_z,
     det_center = source_pos + direction * sdd
 
     # Detector plane axes
-    x_det = np.cross(rot_axis, direction)
+    # MC-GPU azimuthal direction is cross(direction, rot_axis) — opposite sign
+    # to cross(rot_axis, direction).
+    x_det = np.cross(direction, rot_axis)
     x_det /= np.linalg.norm(x_det)
     z_det = rot_axis.copy()
 
