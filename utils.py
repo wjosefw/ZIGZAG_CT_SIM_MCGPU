@@ -1,6 +1,8 @@
 from pathlib import Path
 
 import numpy as np
+import parallelproj
+from array_api_compat import get_namespace, device, to_device
 
 # Map element name → atomic number for lookup during parsing
 ELEMENT_Z = {
@@ -226,3 +228,30 @@ def write_material_input(output_dir, material_data):
         filepath.write_text("\n".join(lines) + "\n")
 
     print(f"Wrote {len(material_data)} .in files to {output_dir}/")
+
+
+def mlem(xstart, xend, measurements, img_dim, img_origin, voxel_size, num_iter=50):
+    """MLEM reconstruction from listmode ray data.
+
+    Backend- and device-agnostic: infers the array namespace and device
+    from the input arrays, so it works with numpy (CPU), cupy (GPU), or torch.
+    """
+    xp = get_namespace(measurements)
+    dev = device(xstart)
+
+    sensitivity = parallelproj.joseph3d_back(
+        xstart, xend, img_dim, img_origin, voxel_size,
+        xp.ones(measurements.shape, dtype=xp.float32)
+    )
+    sensitivity[sensitivity == 0] = 1e-10
+    x = to_device(xp.ones(img_dim, dtype=xp.float32), dev)
+
+    for i in range(num_iter):
+        proj = parallelproj.joseph3d_fwd(xstart, xend, x, img_origin, voxel_size)
+        corr = measurements / (proj + 1e-6)
+        backw = parallelproj.joseph3d_back(xstart, xend, img_dim, img_origin, voxel_size, corr)
+        x = x * backw / (sensitivity + 1e-6)
+        print(f"MLEM iteration {(i + 1):03} / {num_iter:03}  max={x.max():.4f}", end="\r")
+
+    print(f"\nDone. Recon max: {x.max():.4f}")
+    return x
