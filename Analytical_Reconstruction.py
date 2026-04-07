@@ -33,8 +33,8 @@ if __name__ == "__main__":
     img_origin = to_device(xp.asarray(args.img_origin, dtype=xp.float32), dev)
 
     # ── Data loading ─────────────────────────────────────────────────────────────
-    # Transposes are just a convention: phantoms are stored as (z,y,x), parallelproj uses (x,y,z)
-    phantom = np.fromfile(args.phantom_file, dtype=np.uint8).reshape((n0, n1, n2))
+    # Transposes are just a convention: phantoms are stored as (z,y,x) so reshape as (n2,n1,n0), then transpose (2,1,0) to (x,y,z) for parallelproj
+    phantom = np.fromfile(args.phantom_file, dtype=np.uint8).reshape((n2, n1, n0))
     phantom = np.transpose(phantom, (2, 1, 0)).copy()
     phantom = to_device(xp.asarray(phantom, dtype=xp.float32), dev)
 
