@@ -1,0 +1,253 @@
+================================================================================
+                    build_listmode.py — How It Works
+================================================================================
+
+PURPOSE
+-------
+Converts MC-GPU simulation results into a listmode-like format suitable for
+iterative reconstruction. Each row in the output represents one source-to-
+detector-pixel pair with its measured projection value.
+
+
+OUTPUT FORMAT
+-------------
+A numpy binary file (listmode_data.npy) with shape (N, 7) and dtype float32.
+
+Each row contains:
+
+    src_x  src_y  src_z  det_x  det_y  det_z  value
+
+    Columns 0-2:  X-ray source (focal spot) position in world coordinates [cm]
+    Columns 3-5:  Detector pixel center position in world coordinates [cm]
+    Column  6:    Measured pixel value (scatter + primaries, in electrons/cm^2
+                  per history)
+
+Rows are ordered as:
+    sweep_0000 projection 1, all pixels (Z-slow, X-fast)
+    sweep_0000 projection 2, all pixels
+    sweep_0000 projection 3, all pixels
+    sweep_0001 projection 1, all pixels
+    ...and so on for all sweeps.
+
+Within each projection, pixels are flattened in the same order as the MC-GPU
+raw file: the X-index varies fastest (columns) and Z-index varies slowest
+(rows). So pixel index = z * Nx + x.
+
+
+HOW IT WORKS — STEP BY STEP
+----------------------------
+
+1. DISCOVER SWEEPS
+   The script finds all sweep_*.in files in the working directory and
+   processes them in sorted order.
+
+2. PARSE INPUT FILES (.in)
+   From each sweep .in file, the following parameters are extracted:
+     - SDD: source-to-detector distance [cm]
+     - width_x, height_z: physical size of the detector [cm]
+     - offset_x, offset_z: detector image offset from beam center [cm]
+     - rot_axis: axis of rotation (unit vector)
+
+3. PARSE OUTPUT HEADERS
+   For each projection, MC-GPU writes a header file (without .raw extension)
+   containing:
+     - Focal spot position (source_x, source_y, source_z)
+     - Cone beam direction (dir_x, dir_y, dir_z)
+     - Acquisition angle
+     - Number of pixels (Nx, Nz)
+
+   These values are parsed directly from the MC-GPU output, so they match
+   exactly what the simulation computed internally. This avoids any risk of
+   recomputation mismatch (e.g., sign conventions, rotation order).
+
+4. COMPUTE DETECTOR PIXEL WORLD POSITIONS
+   For each projection, every detector pixel center is computed as follows:
+
+   a) Detector center:
+        det_center = source_pos + direction * SDD
+
+      The detector is always placed directly in front of the source, at a
+      distance of SDD along the beam direction. For example, at angle 0:
+
+        source   = (23, 200, 93)
+        direction = (0, -1, 0)
+        SDD       = 350
+        det_center = (23, 200-350, 93) = (23, -150, 93)
+
+      As the source rotates, the detector center follows.
+
+   b) Detector plane axes — building a local coordinate system on the
+      detector surface:
+
+      The detector is a flat rectangle perpendicular to the beam. To place
+      pixels on it, we need two orthogonal directions that lie on its
+      surface:
+
+        X_det = cross(rot_axis, direction)   (normalized)
+        Z_det = rot_axis
+
+      Why this works:
+        - "direction" is the beam direction (normal to the detector)
+        - "rot_axis" is (0, 0, 1) — the vertical rotation axis
+        - The cross product of two vectors gives a third vector
+          perpendicular to both, which lies in the detector plane
+
+      At angle 0 degrees:
+        direction = (0, -1, 0)
+        rot_axis  = (0,  0, 1)
+        X_det = cross((0,0,1), (0,-1,0)) = (1, 0, 0)   (points along X)
+        Z_det = (0, 0, 1)                                (points along Z)
+
+      At angle 15 degrees:
+        direction = (sin15, -cos15, 0) = (0.2588, -0.9659, 0)
+        X_det = cross((0,0,1), (0.2588,-0.9659,0)) = (0.9659, 0.2588, 0)
+        Z_det = (0, 0, 1)
+
+      X_det rotates with the source (stays tangent to the rotation circle).
+      Z_det always points straight up since we rotate around Z.
+
+   c) Local pixel coordinates — where each pixel sits on the detector
+      surface, measured from the detector center:
+
+      The detector has Nx=256 pixels across its width (100 cm) and
+      Nz=1024 pixels along its height (400 cm):
+
+        pixel_size_x = width_x / Nx = 100 / 256 = 0.390625 cm
+        pixel_size_z = height_z / Nz = 400 / 1024 = 0.390625 cm
+
+      For pixel index i (0 to 255) along the width:
+        local_x(i) = (i + 0.5) * pixel_size_x - 0.5 * width_x + offset_x
+
+      For pixel index j (0 to 1023) along the height:
+        local_z(j) = (j + 0.5) * pixel_size_z - 0.5 * height_z + offset_z
+
+      Breaking this formula down:
+        (i + 0.5) * pixel_size   = distance from left edge to pixel CENTER
+                                   (the +0.5 avoids landing on pixel edges)
+        - 0.5 * width            = shift origin to detector center
+                                   (instead of left/bottom corner)
+        + offset                 = additional shift if beam is not centered
+                                   on the detector (0 in our case)
+
+      Example for the first pixel (i=0):
+        local_x(0) = (0.5) * 0.390625 - 50.0 + 0.0 = -49.804688 cm
+        (almost at the left edge, half a pixel inward)
+
+      Example for the last pixel (i=255):
+        local_x(255) = (255.5) * 0.390625 - 50.0 + 0.0 = +49.804688 cm
+        (almost at the right edge, half a pixel inward)
+
+      Example for the center pixel (i=127):
+        local_x(127) = (127.5) * 0.390625 - 50.0 = -0.195313 cm
+        (just left of center — the grid is symmetric but even-numbered,
+         so no pixel lands exactly at 0)
+
+   d) World position — converting local detector coordinates to the global
+      coordinate system:
+
+        pixel_world = det_center + local_x(i) * X_det + local_z(j) * Z_det
+
+      This takes the detector center (a point in world space) and moves
+      along the detector surface by local_x in the width direction and
+      local_z in the height direction.
+
+      Full example — pixel (i=0, j=0) at projection angle 0:
+        det_center  = (23, -150, 93)
+        X_det       = (1, 0, 0)
+        Z_det       = (0, 0, 1)
+        local_x(0)  = -49.804688
+        local_z(0)  = -199.804688
+
+        pixel_world = (23, -150, 93)
+                    + (-49.804688) * (1, 0, 0)
+                    + (-199.804688) * (0, 0, 1)
+                    = (23 - 49.80, -150, 93 - 199.80)
+                    = (-26.80, -150.00, -106.80)
+
+      This is the bottom-left corner pixel of the detector at angle 0,
+      located ~50 cm to the left and ~200 cm below the beam center.
+
+5. READ PROJECTION VALUES
+   Each .raw file contains two back-to-back images (Nx * Nz float32 values
+   each):
+     - Image 1: scatter + primaries combined (total signal)
+     - Image 2: primaries only
+
+   The script reads only the first image (total signal), which is what a
+   real detector would measure.
+
+   HOW PIXEL VALUES MATCH PIXEL POSITIONS (why they don't get mixed up):
+
+   The raw file is a flat sequence of float32 values with no labels. The
+   ordering is determined by how MC-GPU writes them internally:
+
+        pixel_index = x + z * Nx
+
+   So it writes all X pixels for Z-row 0 first, then all X pixels for
+   Z-row 1, and so on. This is standard row-major order with X as the
+   fast (inner) axis and Z as the slow (outer) axis.
+
+   When we read and reshape in numpy:
+
+        data = np.fromfile(file, dtype=np.float32, count=Nx*Nz)
+        data.reshape(Nz, Nx)    # shape (1024, 256)
+
+   reshape(Nz, Nx) respects that same ordering — data[j, i] gives the
+   pixel at X-index i, Z-index j.
+
+   In compute_detector_pixels, we use np.meshgrid(local_x, local_z) which
+   also produces arrays of shape (Nz, Nx) with the same convention —
+   positions[j, i] is the world position of X-index i, Z-index j.
+
+   So when both are flattened to 1D:
+     - det_pos.reshape(-1, 3)[k]  = position of pixel k
+     - values.reshape(-1)[k]      = value of pixel k
+
+   They match because both arrays had shape (Nz, Nx) and numpy flattens
+   in row-major (C) order by default. The only way they would get mixed
+   up is if the reshape or meshgrid used a different axis convention
+   (e.g., swapping Nx and Nz, or using Fortran order). This was verified
+   by checking that the raw file size matches Nx * Nz * 2 * 4 bytes
+   exactly (2 images, 4 bytes per float32).
+
+6. ASSEMBLE AND SAVE
+   For each pixel in each projection, a row is created:
+     [source_x, source_y, source_z, det_x, det_y, det_z, value]
+
+   All rows are stacked into a single array and saved as listmode_data.npy.
+
+
+COORDINATE SYSTEM
+-----------------
+MC-GPU uses a right-handed coordinate system:
+    X: chest-to-nipple direction
+    Y: right-to-left direction
+    Z: caudal-to-cranial direction
+
+All positions are in centimeters [cm].
+
+
+LOADING THE OUTPUT
+------------------
+In Python:
+
+    import numpy as np
+    data = np.load("listmode_data.npy")
+    source_positions  = data[:, 0:3]   # (N, 3)
+    detector_positions = data[:, 3:6]  # (N, 3)
+    pixel_values      = data[:, 6]     # (N,)
+
+To access a specific projection:
+
+    Nx, Nz = 256, 1024
+    pixels_per_proj = Nx * Nz                         # 262,144
+    proj_index = sweep_number * 3 + (proj_number - 1) # 0-based
+    start = proj_index * pixels_per_proj
+    end   = start + pixels_per_proj
+    proj_data = data[start:end]
+
+
+CURRENT DATASET
+---------------
+8 sweeps x 3 projections x 262,144 pixels = 6,291,456 rows
+File size: ~176 MB

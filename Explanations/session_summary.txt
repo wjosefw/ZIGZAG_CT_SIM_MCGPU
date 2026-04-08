@@ -1,0 +1,140 @@
+================================================================================
+  SESSION SUMMARY — CT RECONSTRUCTION COORDINATE SYSTEM DEBUGGING
+================================================================================
+
+DATE: 2026-03-28
+
+
+GOAL
+----
+Get the MLEM CT reconstruction in Toy_recon.ipynb (Part 2) working correctly
+using MC-GPU simulation data stored in listmode_data.npy.
+
+
+FILES INVOLVED
+--------------
+  Toy_recon.ipynb         Main reconstruction notebook
+  Build_listmode.py       Converts MC-GPU output to listmode .npy format
+  proj_test.in            MC-GPU input file (reference, may differ from actual run)
+  results/                MC-GPU output headers + .raw projection files
+  listmode_data.npy       Built listmode: shape (N,7), columns = [sx,sy,sz,dx,dy,dz,y]
+  phantom_3D.raw          150x150x150 uint8 voxel phantom (sphere at voxel [75,75,75])
+  Explanations/coordinate_conventions.txt   Axis convention documentation
+
+
+SIMULATION GEOMETRY (from actual output headers)
+-------------------------------------------------
+  Source start:      (70.0, 7.5, -1.5) cm
+  Source direction:  (-1, 0, 0)  — shoots in -X
+  SAD:               70 cm  → isocenter at X=0, Y=7.5
+  SDD:               130 cm → detector center at X=-60
+  Detector:          256 x 96 pixels, 40 x 24 cm  (pixel size 0.15625 x 0.25 cm)
+  Projections:       1200 total, 0.6 deg/proj = 720 deg total rotation
+  Helical pitch:     ~0.015 cm/proj along Z
+  Source Z range:    -1.5 to +16.485 cm
+
+  NOTE: proj_test.in describes a DIFFERENT setup (256x48, 40x12, 2400 proj, 0.0075 cm/proj).
+  The actual .in file used for the simulation is MISSING. proj_test.in is a reference only.
+
+
+PHANTOM (create_3d_phantom.ipynb)
+----------------------------------
+  Shape:       150 x 150 x 150 voxels, 0.1 cm/voxel
+  Sphere:      center voxel (75, 75, 75), radius 25 voxels = 2.5 cm
+               voxelId=40 (MATERIAL14, density=1.3606 g/cm³, bone-like)
+  Background:  voxelId=0  (MATERIAL1,  density=0.0210 g/cm³, air-like)
+  Storage:     C-order binary uint8, axis 0 = X (slowest), axis 2 = Z (fastest)
+
+
+THREE COORDINATE BUGS FOUND AND FIXED
+--------------------------------------
+
+1. X AXIS — Phantom is on the DETECTOR side of the isocenter
+   Expected (naive): phantom at X=[0,15] (between isocenter and source)
+   Actual:           phantom at X=[-15,0] (between isocenter and detector)
+
+   MC-GPU places the phantom "lower back corner" at X=0 (isocenter / chest wall)
+   with the phantom extending in the -X direction toward the detector/nipple.
+
+   Fix: img_origin_x = -14.95  (center of voxel ix=0 is at world X=-14.95)
+   Phantom spans X=[-14.95, -0.05] in parallelproj coords.
+
+2. Y AXIS — MC-GPU voxel Y index is INVERTED relative to parallelproj
+   MC-GPU: iy=0 corresponds to MAXIMUM physical Y (Y = oy + (Ny-1)*dy = 14.9 cm)
+   parallelproj: index 0 corresponds to minimum coordinate.
+
+   Fix: np.flip(point_img, axis=1).copy() before passing to parallelproj.
+   img_origin_y = 0.05 (standard: oy + dy/2, correct AFTER the flip).
+
+   After flip, sphere center moves from voxel j=75 to j=74 (149-75=74),
+   mapping to world Y = 0.05 + 74*0.1 = 7.45 cm. ✓
+
+3. Z AXIS — Phantom bottom is NOT at Z=0
+   The phantom's "lower back corner" ends up at world Z≈5.5 cm, not Z=0.
+   The exact reason is unclear (possibly the missing .in file had a non-zero
+   Z phantom offset, or MC-GPU uses a different Z origin convention).
+   Determined empirically from ray intersection analysis.
+
+   Fix: img_origin_z = 5.55  (center of voxel iz=0 is at world Z=5.55)
+   Phantom spans Z=[5.55, 20.45] in parallelproj coords.
+
+
+COMBINED CORRECT img_origin
+----------------------------
+  img_origin = [-14.95,  0.05,  5.55]  cm
+
+With this and the Y-flip, the sphere center maps to world:
+  X = -14.95 + 74*0.1 ... wait, sphere is at ix=75:
+  X = -14.95 + 75*0.1 = -7.45 cm
+  Y = 0.05   + 74*0.1 =  7.45 cm  (j=74 after flip)
+  Z = 5.55   + 75*0.1 = 13.05 cm
+
+Empirical ray intersection peak (from listmode):  (-7.5, 7.45, 13.0)  ✓
+
+
+CURRENT STATE OF Toy_recon.ipynb
+----------------------------------
+  Cell data_load:   FIXED — Y-flip added, img_origin correct
+  Cell sim_mlem:    10 MLEM iterations, initialized at mu_water=0.2, y>0 filter
+  Cell sim_viz:     Visualization comparing reconstruction vs phantom
+
+  The reconstruction was "different but not yet good" before the Y-flip was added.
+  Y-flip was added in the last edit — NOT YET VERIFIED by running the notebook.
+
+
+HOW THE LISTMODE DATA IS STRUCTURED
+-------------------------------------
+  y = ln(blank_signal / phantom_signal), clipped to >= 0
+  y > 0: rays that passed through attenuating material
+  y = 0: rays through air (blank == phantom, or phantom brighter due to noise)
+
+  xstart = source focal spot position (from MC-GPU header, exact)
+  xend   = detector pixel center (computed from SDD, detector size, rotation)
+
+  The blank scan is used for geometric normalization of the fan/cone beam.
+  It does NOT represent a material reference — it represents the unattenuated beam.
+
+
+MLEM RECONSTRUCTION (sim_mlem cell)
+--------------------------------------
+  mask = y > 0  (only rays with measured attenuation)
+  sensitivity = A^T * 1  (backproject ones to get normalization)
+  x initialized to 0.2 cm^-1 (mu_water at ~100 kVp)
+  10 iterations of:  x ← x * (A^T (y / Ax)) / sensitivity
+
+  Known limitation: beam is polychromatic (100 kVp), model is monochromatic.
+  Scatter is included in the signal (Build_listmode reads scatter+primaries).
+  Both cause beam hardening / model mismatch artifacts.
+
+
+NEXT STEPS
+----------
+  1. Run the full notebook with the Y-flip fix and check reconstruction quality.
+  2. If reconstruction is still poor, check:
+     a) More MLEM iterations (try 50+)
+     b) Whether Build_listmode was run with the correct .in file (height_z=24
+        for nz=96) — if height_z=12 was used, detector Z positions are halved.
+        Verify: correct pixel size should be 0.25 cm in Z (from header).
+     c) Primaries-only channel (column 2 of each raw frame) vs scatter+primaries.
+  3. Use an asymmetric phantom for future validation (see coordinate_conventions.txt
+     recommendation a) — symmetric sphere makes axis swaps invisible).

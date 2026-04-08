@@ -1,0 +1,201 @@
+================================================================================
+  COORDINATE CONVENTIONS: MC-GPU, LISTMODE, AND PARALLELPROJ
+================================================================================
+
+This document describes how voxel and projection data flows between MC-GPU,
+the listmode builder scripts, and the parallelproj projector, and what axis
+transformations are needed to make them consistent.
+
+
+1. MC-GPU COORDINATE SYSTEM
+--------------------------------------------------------------------------------
+
+MC-GPU uses a right-handed coordinate system (X, Y, Z):
+  - X: chest-to-nipple direction
+  - Y: right-to-left direction
+  - Z: caudal-to-cranial direction (rotation axis by default)
+
+Source position and direction are specified in this (X, Y, Z) system.
+Example from proj_test_0000.in:
+  Source position:  (70, 7.5, 0) cm
+  Source direction: (-1, 0, 0)     — rays travel along -X
+
+
+2. MC-GPU 3D PHANTOM FILE (.raw)
+--------------------------------------------------------------------------------
+
+The .in file specifies:
+  - Number of voxels: Nx Ny Nz        (line 75 in .in file)
+  - Voxel sizes:      dx dy dz  [cm]  (line 76)
+  - Offset:           ox oy oz  [cm]  (line 74, lower back corner)
+
+MC-GPU reads the binary .raw file as a flat array of voxel material IDs
+and indexes them as voxel[x][y][z] in C-order:
+
+  memory address = x * (Ny * Nz) + y * Nz + z
+
+This means:
+  - X varies SLOWEST (outermost loop)
+  - Z varies FASTEST (innermost loop)
+  - Total file size: Nx * Ny * Nz * sizeof(voxel_type) bytes
+
+In numpy terms, to load the phantom matching MC-GPU's interpretation:
+
+  phantom = np.fromfile("phantom.raw", dtype=np.uint8).reshape((Nx, Ny, Nz))
+
+where:
+  - axis 0 = X (slowest)
+  - axis 1 = Y
+  - axis 2 = Z (fastest)
+
+Physical coordinates of voxel [ix, iy, iz]:
+  x = ox + ix * dx
+  y = oy + iy * dy
+  z = oz + iz * dz
+
+
+3. MC-GPU 2D PROJECTION FILE (.raw)
+--------------------------------------------------------------------------------
+
+Each projection .raw file contains two images back-to-back:
+  1. Scatter + primaries (total signal)
+  2. Primaries only
+
+Each image has Nx * Nz float32 values. The MC-GPU header reports:
+  "Number of pixels in X and Z: Nx Nz"
+
+The 2D pixel layout in the file is Z-slow, X-fast:
+
+  memory address = iz * Nx + ix
+
+In numpy:
+  proj = np.fromfile("projection.raw", dtype=np.float32, count=Nx*Nz)
+  proj = proj.reshape((Nz, Nx))
+
+where:
+  - axis 0 = Z (slowest, corresponds to detector height)
+  - axis 1 = X (fastest, corresponds to detector width)
+
+NOTE: The 3D phantom and 2D projection use OPPOSITE axis orderings:
+  - 3D phantom: X slowest, Z fastest
+  - 2D projection: Z slowest, X fastest
+This is an MC-GPU convention, not a bug.
+
+
+4. LISTMODE DATA (Build_listmode.py / Build_listmode_single.py)
+--------------------------------------------------------------------------------
+
+The listmode scripts read MC-GPU output headers and .in files to compute
+world coordinates of the source and every detector pixel center.
+
+Each row of the output .npy file contains 7 float32 values:
+  [source_x, source_y, source_z, det_x, det_y, det_z, pixel_value]
+
+All coordinates are in MC-GPU's (X, Y, Z) system in cm.
+
+Detector pixel positions are computed as:
+  det_center = source_pos + direction * SDD
+  x_det = cross(rot_axis, direction)   — detector horizontal axis
+  z_det = rot_axis                     — detector vertical axis
+  pixel_world = det_center + local_x * x_det + local_z * z_det
+
+The pixel_value is the normalized attenuation: ln(blank / phantom), clipped >= 0.
+
+The detector pixels are iterated in the same order as the .raw file (Z-slow,
+X-fast), so the listmode rows follow that ordering. To reshape back to a 2D
+projection image: proj = listmode[:, 6].reshape((Nz, Nx)).
+
+
+5. PARALLELPROJ EXPECTATIONS
+--------------------------------------------------------------------------------
+
+parallelproj's joseph3d_fwd function signature:
+  joseph3d_fwd(xstart, xend, img, img_origin, voxel_size)
+
+  - xstart: (N, 3) array — world coordinates of line start points
+  - xend:   (N, 3) array — world coordinates of line end points
+  - img:    3D array — voxel image, shape (n0, n1, n2)
+  - img_origin: (3,) array — world coordinates of CENTER of voxel [0,0,0]
+  - voxel_size: (3,) array — voxel dimensions
+
+The mapping is direct:
+  - img[i, j, k] corresponds to spatial dimensions (dim0, dim1, dim2)
+  - Physical coordinate of voxel [i,j,k]:
+      coord = [i, j, k] * voxel_size + img_origin
+  - xstart/xend coordinates use the same (dim0, dim1, dim2) system
+
+Since the listmode data uses MC-GPU's (X, Y, Z) coordinates:
+  - dim0 = X, dim1 = Y, dim2 = Z
+  - img_origin = phantom_offset + voxel_size / 2
+    (parallelproj wants the CENTER of voxel [0,0,0], MC-GPU gives the corner)
+
+
+6. THE AXIS MISMATCH AND THE FIX
+--------------------------------------------------------------------------------
+
+When loading the phantom as reshape(Nx, Ny, Nz), we already have:
+  axis 0 = X, axis 1 = Y, axis 2 = Z
+
+This matches what parallelproj needs (dim0=X, dim1=Y, dim2=Z). However,
+empirical testing with all 6 permutations and axis flips revealed that an
+additional flip along axis 1 (Y) is required:
+
+  phantom = np.fromfile("phantom.raw", dtype=np.uint8).reshape((Nx, Ny, Nz))
+  phantom = np.flip(phantom, axis=1).copy()
+
+This means MC-GPU's Y voxel indexing runs in the opposite direction compared
+to what parallelproj expects. Specifically, MC-GPU's voxel iy=0 corresponds
+to the maximum physical Y coordinate (Y = oy + (Ny-1)*dy), not the minimum.
+In other words, MC-GPU's Y origin is at the "top" of the Y range, and Y
+index increases as physical Y decreases.
+
+The complete loading procedure for parallelproj:
+
+  Nx, Ny, Nz = 150, 150, 150
+  dx, dy, dz = 0.1, 0.1, 0.1
+  ox, oy, oz = 0.0, 0.0, 0.0
+
+  phantom = np.fromfile("phantom.raw", dtype=np.uint8).reshape((Nx, Ny, Nz))
+  phantom = np.flip(phantom, axis=1).copy()
+  img = phantom.astype(np.float32)
+
+  voxel_size = np.array([dx, dy, dz], dtype=np.float32)
+  img_origin = np.array([ox + dx/2, oy + dy/2, oz + dz/2], dtype=np.float32)
+
+
+7. RECOMMENDATIONS FOR FUTURE WORK
+--------------------------------------------------------------------------------
+
+a) Always use an asymmetric phantom for testing.
+   A cubic phantom with equal dimensions (e.g. 150x150x150) makes axis swaps
+   invisible — transpose and reshape produce identical arrays. Use different
+   sizes for each axis (e.g. 100x120x150) or place features asymmetrically
+   so that axis errors are immediately visible in projections.
+
+b) Keep the Y-flip in a single utility function.
+   Create a helper that encapsulates the MC-GPU-to-parallelproj transformation
+   so the convention is applied consistently everywhere:
+
+     def load_phantom_for_parallelproj(path, Nx, Ny, Nz):
+         phantom = np.fromfile(path, dtype=np.uint8).reshape((Nx, Ny, Nz))
+         return np.flip(phantom, axis=1).copy()
+
+c) Validate with a single known projection first.
+   Before running full reconstructions, always compare a single parallelproj
+   forward projection against the corresponding MC-GPU projection (normalized
+   to the same scale). If the MAE is small and no double-structures or
+   reflections are visible, the axes are correct.
+
+d) Document coordinate systems in .in files.
+   When setting up new MC-GPU simulations, add a comment block noting the
+   axis convention and any transformations needed downstream.
+
+e) Be aware of the 2D vs 3D ordering difference.
+   MC-GPU uses X-slow/Z-fast for 3D phantoms but Z-slow/X-fast for 2D
+   projections. Don't assume one tells you about the other.
+
+f) Phantom origin convention.
+   MC-GPU specifies the phantom offset as the "lower back corner" of the
+   voxel geometry. parallelproj wants the center of voxel [0,0,0]. Always
+   add half a voxel size to convert:
+     img_origin = offset + voxel_size / 2

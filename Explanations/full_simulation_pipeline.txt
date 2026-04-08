@@ -1,0 +1,592 @@
+================================================================================
+  FULL CT SIMULATION PIPELINE — STEP-BY-STEP GUIDE
+  CT_GHENT_SIMS repository
+================================================================================
+
+OVERVIEW
+--------
+This document describes how to run a complete Monte Carlo CT simulation and
+iterative image reconstruction from scratch. The pipeline consists of six major
+stages:
+
+  1. Material definition  — convert the Schneider HU table into MC-GPU materials
+  2. Phantom preparation  — create a voxelized phantom (XCAT or custom)
+  3. CT trajectory        — generate zigzag sweep input files for MC-GPU
+  4. MC-GPU simulation    — run the Monte Carlo X-ray transport
+  5. Listmode conversion  — convert raw projections to listmode format
+  6. MLEM reconstruction  — iteratively reconstruct the 3-D image
+
+Tools used:
+  - PENELOPE (material.x)           cross-section generation
+  - MC-GPU v1.5b                    GPU Monte Carlo X-ray simulation
+  - MC-GPU_create_material_data.x   convert PENELOPE .mat to MC-GPU format
+  - XCAT (dxcat2_linux_64bit)       realistic human phantom (optional)
+  - Python 3 + parallelproj         listmode processing and MLEM reconstruction
+
+All commands below are run from the repository root (/home/josea/CT_GHENT_SIMS)
+unless otherwise stated.
+
+================================================================================
+STAGE 1 — MATERIAL DEFINITION
+================================================================================
+
+The material pipeline converts the Schneider HU-to-tissue table into a set of
+material files that MC-GPU can use to simulate X-ray interactions accurately.
+
+This stage has three sub-steps:
+  1a. Generate PENELOPE input files (.in) from the Schneider table
+  1b. Run PENELOPE's material.x to create cross-section files (.mat)
+  1c. Convert .mat files to MC-GPU format (.mcgpu)
+  1d. Generate the material list for MC-GPU (material_list.txt)
+
+----------
+1a. Generate PENELOPE input files
+----------
+
+The Schneider table (HUtoMaterialSchneider.txt) defines 25 tissue materials,
+each specified by its elemental composition (weight fractions of H, C, N, O,
+etc.) and a density look-up as a function of Hounsfield Unit.
+
+Script: Generate_PENELOPE_material_instructions.py
+  - Reads HUtoMaterialSchneider.txt
+  - Writes one MATERIAL<N>.in file per material (25 total)
+  - Each .in file contains the scripted answers to PENELOPE's interactive prompts
+
+Run:
+  python Generate_PENELOPE_material_instructions.py \
+      --output-dir pendbase/material_inputs
+
+Output: pendbase/material_inputs/MATERIAL1.in ... MATERIAL25.in
+
+Each .in file tells PENELOPE:
+  - The material name (e.g. MATERIAL1)
+  - How many elements are present
+  - The atomic number (Z) and weight fraction for each element
+  - A placeholder density (the actual density varies per voxel in MC-GPU)
+  - The output filename (e.g. MATERIAL1.mat)
+
+----------
+1b. Run PENELOPE material.x to create .mat files
+----------
+
+PENELOPE's material.x executable reads each .in file and produces a .mat file
+containing energy-dependent cross-sections for photoelectric absorption,
+Compton scattering, and Rayleigh scattering. material.x MUST be run from inside
+the pendbase/ directory because it depends on data files there (pdatconf.p06,
+etc.).
+
+Script: pendbase/Sequential_PENELOPE_material_creation.sh
+
+Run:
+  cd pendbase
+  bash Sequential_PENELOPE_material_creation.sh material_inputs .
+  cd ..
+
+The script loops over all MATERIAL*.in files and pipes each one into material.x.
+The resulting MATERIAL<N>.mat files are placed in the current directory
+(pendbase/).
+
+Output: pendbase/MATERIAL1.mat ... pendbase/MATERIAL25.mat
+
+----------
+1c. Convert .mat files to MC-GPU format (.mcgpu)
+----------
+
+MC-GPU requires its own binary material format covering the energy range of the
+simulated X-ray spectrum (5–150 keV for a typical diagnostic CT tube).
+
+Script: Sequential_MCGPU_material_creation.sh
+
+Run:
+  bash Sequential_MCGPU_material_creation.sh MC-GPU_materials
+
+The script:
+  - Loops over pendbase/MATERIAL*.mat
+  - Pipes into MC-GPU_create_material_data.x with energy range 5000–150000 eV
+    and 1495 energy bins
+  - Writes MATERIAL<N>_5_150keV.mcgpu into the specified output directory
+
+Output: MC-GPU_materials/MATERIAL1_5_150keV.mcgpu ... MATERIAL25_5_150keV.mcgpu
+
+NOTE: MC-GPU_create_material_data.x must be present in the repository root (or
+PATH). Similarly, PENELOPE's material.x must be present in pendbase/.
+
+----------
+1d. Generate material_list.txt for MC-GPU
+----------
+
+MC-GPU maps each voxel value (voxelId, a uint8 index 0–254) to a specific
+material file and physical density. Rather than using a single density per
+material, the pipeline partitions each Schneider HU section into n_partitions
+(default 3) equal sub-ranges and assigns a representative density to each.
+This gives finer density sampling without increasing the number of unique
+material cross-section files.
+
+With 25 HU sections and 3 partitions each, there are 75 unique voxelIds (0–74).
+
+Script: Generate_material_list_VICTRE-MCGPU_format.py
+
+Run:
+  python Generate_material_list_VICTRE-MCGPU_format.py \
+      --prefix MC-GPU_materials \
+      --n-partitions 3
+
+Output: material_list.txt (75 lines)
+
+Each line in material_list.txt looks like:
+  MC-GPU_materials/MATERIAL1_5_150keV.mcgpu   density=0.0210   voxelId=0
+
+The --prefix argument adds the directory path before the material file name so
+that MC-GPU can find the .mcgpu files from wherever it is run.
+
+================================================================================
+STAGE 2 — PHANTOM PREPARATION
+================================================================================
+
+MC-GPU requires a voxelized phantom stored as a flat binary file of uint8 values,
+where each byte is a voxelId (0–74). A second identical-shaped "blank" phantom
+(all zeros, representing air only) is needed for normalization.
+
+There are two options: use the XCAT software to generate a realistic human
+phantom, or use a custom phantom (Shepp-Logan, single sphere, etc.).
+
+----------
+Option A: XCAT human phantom
+----------
+
+XCAT generates a phantom file containing linear attenuation coefficients (in
+1/pixel units). The Convert_XCAT_phantom_to_HU_VoxelIDS.py script converts
+this to the voxelId format required by MC-GPU.
+
+Step A1 — Run XCAT:
+  cd XCAT
+  ./dxcat2_linux_64bit xcat2.cfg
+  cd ..
+
+  This produces:
+    XCAT/whole_body_phantom_atn_1.bin   (float32, Z x Y x X order)
+    XCAT/whole_body_phantom_log         (imaging parameters: voxel sizes, etc.)
+
+Step A2 — Convert to HU and voxelId:
+  python Convert_XCAT_phantom_to_HU_VoxelIDS.py \
+      --input XCAT/whole_body_phantom_atn_1.bin \
+      --log   XCAT/whole_body_phantom_log \
+      --output-hu    XCAT/whole_body_phantom_HU.bin \
+      --output-voxel XCAT/whole_body_phantom_voxelId.bin \
+      --output-blank XCAT/whole_body_phantom_blank.bin \
+      --n-partitions 3
+
+  The script:
+    1. Reads geometry from the XCAT log (array size, pixel width, att_water)
+    2. Reads attenuation data (float32, shape Z x Y x X)
+    3. Divides by pixel_width to convert to 1/cm units
+    4. Converts to HU:  HU = 1000 * (mu - mu_water) / mu_water
+    5. Maps each HU value to a voxelId using the same Schneider partition scheme
+       as material_list.txt (so voxelId and density are consistent)
+    6. Saves:
+         whole_body_phantom_voxelId.bin  — uint8 phantom for simulation
+         whole_body_phantom_HU.bin       — int16 HU values for reference
+         whole_body_phantom_blank.bin    — uint8 all-zeros for normalization
+
+  IMPORTANT: use --n-partitions 3 (or whatever value you used in Step 1d) so
+  that the voxelId values in the phantom match the material_list.txt entries.
+
+----------
+Option B: Custom or test phantom
+----------
+
+For testing, pre-made phantoms are already in the repository:
+  phantom_3D.raw        — a 150x150x150 uint8 voxelId phantom
+  blank_3D.raw          — a 150x150x150 uint8 all-zero blank
+  shepp_logan_flat.raw  — Shepp-Logan test phantom
+  single_sphere.raw     — simple single sphere test phantom
+
+These are ready to use directly in the MC-GPU .in file (see Stage 3).
+
+================================================================================
+STAGE 3 — CT TRAJECTORY: GENERATING ZIGZAG SWEEPS
+================================================================================
+
+MC-GPU supports helical scanning (moving the source/detector along the Z-axis
+while rotating), but it only allows a single fixed translation direction per
+run. A real helical CT scan requires alternating up and down sweeps. The
+Generate_ct_sweeps.py script handles this by splitting the full scan into
+multiple MC-GPU calls ("sweeps"), ensuring continuity of both angle and Z
+position across sweep boundaries.
+
+Script: Generate_ct_sweeps.py
+
+Arguments:
+  template      Path to the base MC-GPU .in file (e.g. proj_test.in)
+  num_sweeps    Number of vertical sweeps in a full 360° rotation
+  total_z       Total Z distance covered in one sweep [cm]
+  z_step        Vertical step between consecutive projections [cm]
+  -o DIR        Output directory for generated files
+
+Run example (8 sweeps, 5 cm per sweep, 0.0075 cm per step):
+  python Generate_ct_sweeps.py proj_test.in 8 5.0 0.0075 -o ct_scan/
+
+The script derives the following quantities automatically:
+  n_steps              = round(total_z / z_step)
+  projections_per_sweep = n_steps + 1
+  angle_per_sweep       = 360 / num_sweeps
+  angle_between         = angle_per_sweep / (projections_per_sweep - 1)
+  total_projections     = projections_per_sweep * num_sweeps
+
+Across sweeps, the starting Z and angle are computed from the last projection
+of the previous sweep, so there are no gaps or jumps. The Z translation
+direction is flipped for alternating sweeps (positive for even, negative for
+odd).
+
+Output:
+  ct_scan/sweep_0000.in  ... ct_scan/sweep_NNNN.in    one .in file per sweep
+  ct_scan/run_ct_scan.sh                              shell script to run all
+
+----------
+Configuring the template .in file
+----------
+
+Before generating sweeps, configure the template .in file (e.g. proj_test.in)
+with the correct geometry. Key fields to set:
+
+  SOURCE POSITION       X Y Z [cm] — starting position of the X-ray source
+  SOURCE DIRECTION      U V W — unit vector pointing from source to detector
+  APERTURE ANGLES       azimuthal and polar half-angles [degrees]
+  SPECTRUM FILE         path to .spc file (e.g. spectrum/100kVp_0.8mmAl.spc)
+  DETECTOR OUTPUT       output filename prefix (e.g. results/phantom)
+  PIXEL COUNT           Nx Nz — number of detector pixels in X and Z
+  PHYSICAL SIZE         width height [cm] — detector dimensions
+  SOURCE-TO-DETECTOR    SDD [cm]
+  NUMBER OF PROJECTIONS (will be overwritten per sweep by the script)
+  ROTATION AXIS         0.0 0.0 1.0 (Z-axis for standard CT)
+  TRANSLATION PER PROJ  z_step [cm] (same value as --z_step argument)
+  PHANTOM FILE          path to voxelId .raw/.bin file
+  PHANTOM DIMENSIONS    Nx Ny Nz — number of voxels in each direction
+  VOXEL SIZES           dx dy dz [cm]
+  PHANTOM OFFSET        x0 y0 z0 [cm] — position of phantom lower-back corner
+  MATERIAL FILE LIST    paste the contents of material_list.txt here
+
+  The script Generate_ct_sweeps.py modifies these fields automatically:
+    - NUMBER OF PROJECTIONS (per sweep)
+    - ANGULAR ROTATION TO FIRST PROJECTION (cumulative from start)
+    - ANGLE BETWEEN PROJECTIONS (derived)
+    - TRANSLATION ALONG ROTATION AXIS (±z_step, sign flips per sweep)
+    - SOURCE POSITION Z (starting Z for each sweep)
+    - OUTPUT IMAGE FILE NAME (unique name per sweep)
+
+================================================================================
+STAGE 4 — MC-GPU SIMULATION
+================================================================================
+
+Run MC-GPU for each sweep using the generated shell script:
+
+  bash ct_scan/run_ct_scan.sh
+
+Or run sweeps individually if you need to distribute across machines:
+
+  ./MC-GPU_v1.5b.x ct_scan/sweep_0000.in
+  ./MC-GPU_v1.5b.x ct_scan/sweep_0001.in
+  ...
+
+MC-GPU requires an NVIDIA GPU. The executable MC-GPU_v1.5b.x must be present in
+the working directory (or on PATH).
+
+For each projection within each sweep, MC-GPU writes:
+  results/<prefix>_sweep_XXXX_proj_YYYY       — ASCII header file
+  results/<prefix>_sweep_XXXX_proj_YYYY.raw   — binary projection data
+
+The .raw file contains two float32 images packed back-to-back (each Nx*Nz
+values, Z-slow/X-fast order):
+  Image 1: scatter + primaries  (total signal reaching detector)
+  Image 2: primaries only       (no scatter)
+The listmode builder uses Image 1 (total signal).
+
+----------
+Blank projections (normalization)
+----------
+
+You must also simulate a blank scan (phantom = all air) under identical
+geometry to normalize the attenuation measurements. Use the blank phantom
+(e.g. blank_3D.raw or whole_body_phantom_blank.bin) as the phantom file and
+run the same sweep sequence with a separate output prefix:
+
+  # In the template .in file, change:
+  #   PHANTOM FILE -> blank_3D.raw  (all-zero voxelIds = air)
+  #   OUTPUT NAME  -> results/blank
+  python Generate_ct_sweeps.py proj_test_blank.in 8 5.0 0.0075 -o ct_scan_blank/
+  bash ct_scan_blank/run_ct_scan.sh
+
+  Output: results/blank_sweep_XXXX_proj_YYYY.raw
+
+================================================================================
+STAGE 5 — LISTMODE CONVERSION
+================================================================================
+
+The Build_listmode.py script converts all MC-GPU output projections into a
+single numpy array in listmode format. Listmode stores one row per detector
+pixel per projection, containing the 3D world coordinates of the source and
+detector pixel, plus the measured attenuation value.
+
+Script: Build_listmode.py
+
+Run:
+  python Build_listmode.py \
+      --in-root          sweep \
+      --results-dir      results \
+      --results-root     phantom \
+      --blank-results-root blank
+
+Arguments:
+  --in-root              Root name for the sweep .in files
+                         ('sweep' finds sweep_0000.in, sweep_0001.in, ...)
+  --results-dir          Directory containing MC-GPU output files
+  --results-root         Prefix for phantom projection files
+                         ('phantom' finds phantom_sweep_XXXX_proj_YYYY)
+  --blank-results-root   Prefix for blank projection files
+                         ('blank' finds blank_sweep_XXXX_proj_YYYY)
+
+For each projection, the script:
+  1. Parses the ASCII header to get source position and beam direction
+  2. Parses the .in file for detector geometry (SDD, detector size, rotation axis)
+  3. Computes the 3D world position of every detector pixel:
+       det_center = source_pos + direction * SDD
+       X_det = normalize(cross(direction, rot_axis))   [horizontal axis]
+       Z_det = rot_axis                                [vertical axis]
+       pixel_pos[i,j] = det_center + local_x[i]*X_det + local_z[j]*Z_det
+  4. Reads the phantom .raw and blank .raw files
+  5. Computes attenuation: value = ln(blank / phantom), clipped to >= 0
+  6. Writes one row per pixel: [src_x, src_y, src_z, det_x, det_y, det_z, value]
+
+Output: listmode_data.npy
+  Shape: (N_total_pixels, 7)  dtype: float32
+  Columns:
+    [0] source_x   X-ray source world X [cm]
+    [1] source_y   X-ray source world Y [cm]
+    [2] source_z   X-ray source world Z [cm]
+    [3] det_x      Detector pixel world X [cm]
+    [4] det_y      Detector pixel world Y [cm]
+    [5] det_z      Detector pixel world Z [cm]
+    [6] value      Attenuation = ln(blank/phantom) >= 0
+
+N_total_pixels = num_sweeps * projections_per_sweep * Nx * Nz
+
+================================================================================
+STAGE 6 — MLEM RECONSTRUCTION
+================================================================================
+
+The reconstruction uses the Maximum Likelihood Expectation Maximization (MLEM)
+algorithm implemented in utils.py, with forward/backward projectors from the
+parallelproj library. MLEM treats each listmode entry as a line integral and
+iteratively updates the image to maximize the Poisson log-likelihood.
+
+Recommended: run the reconstruction in a Jupyter notebook for interactive
+exploration. See the existing notebooks (e.g. Toy_recon.ipynb) for examples.
+
+Minimal reconstruction code (Python):
+
+    import numpy as np
+    from utils import mlem
+
+    # Load listmode data
+    data = np.load("listmode_data.npy")
+    xstart = data[:, 0:3]   # source positions (N, 3)
+    xend   = data[:, 3:6]   # detector positions (N, 3)
+    values = data[:, 6]     # attenuation measurements (N,)
+
+    # Image volume definition
+    img_dim    = (150, 150, 150)          # number of voxels (Nx, Ny, Nz)
+    voxel_size = np.array([0.1, 0.1, 0.1])  # [cm]
+
+    # img_origin = world coordinates of the CENTER of voxel [0,0,0]
+    # = phantom lower-back corner (as set in .in file) + voxel_size/2
+    phantom_offset = np.array([0.0, 0.0, 0.0])   # from PHANTOM OFFSET in .in
+    img_origin = phantom_offset + voxel_size / 2
+
+    # NOTE: MC-GPU's Y axis is inverted relative to parallelproj.
+    # If you loaded a raw phantom for reference, flip axis 1:
+    #   ref = np.fromfile("phantom_3D.raw", dtype=np.uint8).reshape(img_dim)
+    #   ref = np.flip(ref, axis=1).copy()
+
+    # Run MLEM
+    recon = mlem(xstart, xend, values, img_dim, img_origin, voxel_size,
+                 num_iter=50)
+    # recon shape: (Nx, Ny, Nz), float64
+
+The mlem() function:
+  - Computes the sensitivity image (A^T * 1) once before iterations
+  - Each iteration: image = image * (A^T (y / (A*image))) / sensitivity
+  - Supports numpy (CPU), cupy (GPU), and torch backends via array_api_compat
+
+IMPORTANT — Coordinate conventions for reconstruction:
+  - The image array is indexed as (X, Y, Z) in both the phantom file and
+    parallelproj. X is the slowest axis (outermost), Z is fastest (innermost).
+  - MC-GPU voxel Y increases in the opposite direction from parallelproj Y.
+    If projections appear geometrically mirrored, flip axis 1 of your image
+    (np.flip(image, axis=1)) to correct this.
+  - img_origin is the center of voxel [0,0,0], not the corner. This is offset
+    from the PHANTOM OFFSET value in the .in file by +voxel_size/2 in each
+    dimension.
+  - The 2D projection images in .raw files are stored Z-slow, X-fast, which
+    is the opposite of the 3D volume convention (X-slow, Z-fast).
+
+================================================================================
+COMPLETE QUICK-START CHECKLIST
+================================================================================
+
+The steps below assume all executables (material.x, MC-GPU_v1.5b.x,
+MC-GPU_create_material_data.x) are present in their expected locations.
+
+  [ ] 1. Generate PENELOPE inputs
+        python Generate_PENELOPE_material_instructions.py \
+            --output-dir pendbase/material_inputs
+
+  [ ] 2. Run PENELOPE material.x  (run from inside pendbase/)
+        cd pendbase
+        bash Sequential_PENELOPE_material_creation.sh material_inputs .
+        cd ..
+
+  [ ] 3. Convert to MC-GPU format
+        bash Sequential_MCGPU_material_creation.sh MC-GPU_materials
+
+  [ ] 4. Create material_list.txt
+        python Generate_material_list_VICTRE-MCGPU_format.py \
+            --prefix MC-GPU_materials --n-partitions 3
+
+  [ ] 5a. [If using XCAT] Run XCAT and convert phantom
+        cd XCAT && ./dxcat2_linux_64bit xcat2.cfg && cd ..
+        python Convert_XCAT_phantom_to_HU_VoxelIDS.py \
+            --input XCAT/whole_body_phantom_atn_1.bin \
+            --log   XCAT/whole_body_phantom_log \
+            --n-partitions 3
+
+  [ ] 5b. [If using test phantom] Use phantom_3D.raw / blank_3D.raw directly
+
+  [ ] 6. Configure proj_test.in with correct geometry and material_list.txt
+
+  [ ] 7. Generate zigzag sweep files
+        python Generate_ct_sweeps.py proj_test.in <num_sweeps> <total_z> <z_step> \
+            -o ct_scan/
+
+  [ ] 8. Also generate sweep files for the blank scan (same geometry, blank phantom)
+
+  [ ] 9. Run MC-GPU simulation
+        bash ct_scan/run_ct_scan.sh
+        bash ct_scan_blank/run_ct_scan.sh
+
+  [ ] 10. Build listmode data
+        python Build_listmode.py \
+            --in-root          sweep \
+            --results-dir      results \
+            --results-root     phantom \
+            --blank-results-root blank
+
+  [ ] 11. Run MLEM reconstruction (Python/Jupyter)
+        # Load listmode_data.npy, define img_dim / img_origin / voxel_size,
+        # call mlem() from utils.py
+
+================================================================================
+FILE STRUCTURE REFERENCE
+================================================================================
+
+CT_GHENT_SIMS/
+├── HUtoMaterialSchneider.txt          Schneider HU-to-material table (input)
+├── material_list.txt                  MC-GPU material list (generated, Stage 1d)
+│
+├── Generate_PENELOPE_material_instructions.py   Stage 1a
+├── Generate_material_list_VICTRE-MCGPU_format.py  Stage 1d
+├── Generate_ct_sweeps.py              Stage 3
+├── Build_listmode.py                  Stage 5
+├── Convert_XCAT_phantom_to_HU_VoxelIDS.py  Stage 2 (XCAT path)
+├── Sequential_MCGPU_material_creation.sh    Stage 1c
+├── utils.py                           Shared utilities and mlem()
+│
+├── pendbase/
+│   ├── material.x                     PENELOPE executable
+│   ├── Sequential_PENELOPE_material_creation.sh   Stage 1b
+│   ├── material_inputs/MATERIAL*.in   Generated by Stage 1a
+│   ├── MATERIAL*.mat                  Generated by Stage 1b
+│   └── *.p06                          PENELOPE data tables
+│
+├── MC-GPU_materials/
+│   └── MATERIAL*_5_150keV.mcgpu       Generated by Stage 1c
+│
+├── MC-GPU_v1.5b.x                     MC-GPU executable
+├── MC-GPU_create_material_data.x      Material conversion tool
+│
+├── spectrum/
+│   └── 100kVp_0.8mmAl.spc            X-ray spectrum (100 kVp, 0.8 mm Al filter)
+│
+├── XCAT/
+│   ├── dxcat2_linux_64bit             XCAT executable
+│   ├── xcat2.cfg                      XCAT configuration
+│   ├── whole_body_phantom_atn_1.bin   XCAT output (float32 attenuation)
+│   └── whole_body_phantom_log         XCAT geometry log
+│
+├── phantom_3D.raw                     Test phantom (150^3, uint8 voxelIds)
+├── blank_3D.raw                       Blank phantom (150^3, uint8 zeros)
+│
+├── proj_test.in                       Template MC-GPU input file
+│
+├── ct_scan/                           Generated by Stage 3
+│   ├── sweep_0000.in ... sweep_NNNN.in
+│   └── run_ct_scan.sh
+│
+├── results/                           MC-GPU outputs (Stages 4)
+│   ├── phantom_sweep_XXXX_proj_YYYY       ASCII header
+│   └── phantom_sweep_XXXX_proj_YYYY.raw   Binary projection
+│
+├── listmode_data.npy                  Output of Stage 5 (float32, shape Nx7)
+│
+└── Explanations/                      Documentation
+    ├── full_simulation_pipeline.txt   This file
+    ├── zigzag_ct_explanation.txt      Detailed sweep geometry notes
+    ├── build_listmode_explanation.txt Detailed listmode algorithm notes
+    └── coordinate_conventions.txt     Axis and memory layout conventions
+
+================================================================================
+NOTES AND COMMON PITFALLS
+================================================================================
+
+1. PENELOPE must run in its own directory.
+   material.x looks for pdatconf.p06 and other data files in the current
+   working directory. Always run Sequential_PENELOPE_material_creation.sh from
+   inside pendbase/.
+
+2. n-partitions must be consistent across stages.
+   Use the same --n-partitions value in Generate_material_list_VICTRE-MCGPU_format.py
+   and Convert_XCAT_phantom_to_HU_VoxelIDS.py. If they differ, voxelId values
+   in the phantom will point to the wrong material entries.
+
+3. Blank simulation must use identical geometry.
+   The blank sweep .in files must have the same detector size, SDD, number of
+   projections, and trajectory as the phantom sweep files. Only the phantom file
+   path changes (use the all-zero blank file).
+
+4. MC-GPU 2D projections are Z-slow, X-fast.
+   When loading .raw files with numpy, reshape as (Nz, Nx), not (Nx, Nz).
+   This is the opposite of the 3D phantom, which is (Nx, Ny, Nz) / X-slow.
+
+5. Y-axis inversion for reconstruction.
+   MC-GPU's Y index increases in the opposite direction compared to parallelproj.
+   If reconstructed images appear mirrored, apply np.flip(image, axis=1) to the
+   image before or after reconstruction.
+
+6. img_origin is the voxel center, not the corner.
+   PHANTOM OFFSET in the .in file specifies the world coordinate of the lower-back
+   corner of voxel [0,0,0]. parallelproj's img_origin is the center of that voxel,
+   so:  img_origin = phantom_offset + voxel_size / 2
+
+7. Scatter is included.
+   Build_listmode.py uses Image 1 (scatter + primaries) from each .raw file.
+   This gives realistic attenuation measurements but may introduce beam hardening
+   and scatter artifacts in the reconstruction. Using Image 2 (primaries only)
+   would give cleaner reconstructions at the cost of realism.
+
+8. Large datasets.
+   A typical scan with 2400 projections at 256x48 pixels generates ~110 million
+   listmode rows, occupying ~3 GB as float32. Ensure sufficient disk space and RAM
+   (or GPU memory) for the reconstruction.
+
+================================================================================
+End of document
+================================================================================

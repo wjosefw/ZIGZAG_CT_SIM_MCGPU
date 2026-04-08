@@ -1,0 +1,313 @@
+================================================================================
+        ZIGZAG CT SCAN SIMULATION WITH MC-GPU — IMPLEMENTATION DETAILS
+================================================================================
+
+
+1. THE PROBLEM
+--------------------------------------------------------------------------------
+
+MC-GPU simulates X-ray projections with the source rotating around a phantom.
+During rotation, the source can translate along the rotation axis (helical scan).
+However, the translation step is FIXED for a given MC-GPU call — the source can
+only move in one vertical direction per simulation run.
+
+In a real CT scanner with a zigzag (or "step-and-shoot" with continuous rotation)
+acquisition, the source moves UP for a set of projections, then reverses and
+moves DOWN, then UP again, etc., all while continuously rotating around the
+patient. This zigzag pattern cannot be achieved in a single MC-GPU call.
+
+
+2. THE SOLUTION
+--------------------------------------------------------------------------------
+
+We split the full scan into multiple MC-GPU calls, one per vertical sweep.
+Each sweep covers a portion of the full rotation with a constant vertical
+translation direction. Between sweeps, we flip the translation sign.
+
+The key challenge is maintaining CONTINUITY between sweeps:
+  - The rotation must continue seamlessly (no gaps or overlaps in angle).
+  - The vertical (Z) position must connect properly at sweep boundaries.
+  - The source direction does not need to be recomputed because MC-GPU handles
+    the rotation internally through its tomographic trajectory parameters.
+
+
+3. MC-GPU PARAMETERS INVOLVED
+--------------------------------------------------------------------------------
+
+The following parameters from the .in file are modified per sweep:
+
+  a) SOURCE POSITION (Z component only)
+     The X and Y coordinates stay the same — MC-GPU rotates the source from
+     this initial position by the specified angles. Only Z changes to account
+     for accumulated vertical translation from previous sweeps.
+
+  b) NUMBER OF PROJECTIONS
+     How many projections this sweep will acquire. Typically equal to
+     projections_per_sweep, except possibly the last sweep which may have
+     fewer to reach the exact total.
+
+  c) ANGULAR ROTATION TO FIRST PROJECTION
+     This offsets the first projection's angle relative to the initial source
+     direction defined in the .in file. By setting this to the cumulative
+     rotation angle from all previous sweeps, we ensure the rotation continues
+     where the last sweep ended.
+
+  d) ANGLE BETWEEN PROJECTIONS
+     The angular step between consecutive projections in degrees. This is
+     DERIVED from the inputs: angle_between = (360 / num_sweeps) / projections_per_sweep.
+     It is constant across all sweeps.
+
+  e) TRANSLATION ALONG ROTATION AXIS BETWEEN PROJECTIONS
+     The vertical step in cm. Positive = movement in the +Z direction (up),
+     negative = movement in -Z (down). The sign flips each sweep to create
+     the zigzag pattern.
+
+  f) OUTPUT IMAGE FILE NAME
+     Each sweep writes to a unique output file to avoid overwriting.
+
+Parameters that do NOT change between sweeps:
+  - Source X, Y position (MC-GPU rotates from this base position)
+  - Source direction cosines (MC-GPU applies the rotation itself)
+  - Euler angles (tied to the source direction, which doesn't change)
+  - All detector, material, geometry, and dose parameters
+
+
+4. INPUT ARGUMENTS AND DERIVED QUANTITIES
+--------------------------------------------------------------------------------
+
+CLI arguments (3 inputs):
+
+    num_sweeps              Number of vertical sweeps in a full 360-degree rotation
+    total_z                 Total vertical distance per sweep [cm]
+    z_step                  Vertical step between projections [cm]
+
+Derived quantities:
+
+    n_steps                 = round(total_z / z_step)
+                              Number of translation steps per sweep, rounded to
+                              nearest integer to handle non-exact division.
+
+    projections_per_sweep   = n_steps + 1
+                              With N steps there are N+1 positions (one at each
+                              end plus the intermediate ones). This ensures the
+                              sweep spans exactly total_z.
+
+    angle_per_sweep         = 360 / num_sweeps
+                              Each sweep covers an equal angular fraction.
+
+    angle_between           = angle_per_sweep / projections_per_sweep
+                              Derived so that projections fit exactly into the
+                              angular range of each sweep. This is the value
+                              written to the .in files.
+
+    total_projections       = projections_per_sweep * num_sweeps
+
+Why z_step is an input and angle_between is derived:
+    The vertical step directly controls the spatial sampling resolution along Z,
+    which is a physical design parameter. The angular step is adjusted to ensure
+    the projections divide evenly into each sweep's angular range.
+
+Why projections_per_sweep = n_steps + 1:
+    Example: total_z = 200 cm, z_step = 100 cm
+      n_steps = 200 / 100 = 2
+      projections = 2 + 1 = 3
+
+      Projection 0:  Z = 0        (start)
+      Projection 1:  Z = 100      (step 1)
+      Projection 2:  Z = 200      (step 2)
+
+    Without the +1 you'd get 2 projections spanning only 100 cm, missing the
+    final position.
+
+
+5. THE ZIGZAG GEOMETRY — STEP BY STEP
+--------------------------------------------------------------------------------
+
+Consider a concrete example:
+  - num_sweeps = 4
+  - total_z = 5 cm
+  - z_step = 5 cm
+  - Initial source Z = 93.0 cm
+
+  Derived:
+    n_steps = round(5/5) = 1
+    projections_per_sweep = 1 + 1 = 2
+    angle_per_sweep = 360/4 = 90 deg
+    angle_between = 90/2 = 45 deg
+    total_projections = 2 x 4 = 8
+
+
+SWEEP 0 (going UP, translation = +5.0 cm)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  Source Z at start:         93.0 cm
+  Angular rotation to first: 0.0 deg
+
+  Projection 0:  angle =   0 deg,  Z = 93.0 cm
+  Projection 1:  angle =  45 deg,  Z = 98.0 cm
+                                        ^
+                                        | last Z of this sweep
+
+
+SWEEP 1 (going DOWN, translation = -5.0 cm)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  Source Z at start:         98.0 cm  (= last Z of sweep 0)
+  Angular rotation to first: 90.0 deg (= 0 + 2*45)
+
+  Projection 0:  angle =  90 deg,  Z = 98.0 cm
+  Projection 1:  angle = 135 deg,  Z = 93.0 cm
+                                        ^
+                                        | last Z of this sweep
+
+
+SWEEP 2 (going UP, translation = +5.0 cm)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  Source Z at start:         93.0 cm  (= last Z of sweep 1)
+  Angular rotation to first: 180.0 deg (= 90 + 2*45)
+
+  Projection 0:  angle = 180 deg,  Z = 93.0 cm
+  Projection 1:  angle = 225 deg,  Z = 98.0 cm
+
+
+SWEEP 3 (going DOWN, translation = -5.0 cm)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  Source Z at start:         98.0 cm  (= last Z of sweep 2)
+  Angular rotation to first: 270.0 deg (= 180 + 2*45)
+
+  Projection 0:  angle = 270 deg,  Z = 98.0 cm
+  Projection 1:  angle = 315 deg,  Z = 93.0 cm
+
+
+The full sequence of Z positions across all 8 projections:
+
+    Z (cm)
+    98 |       *---*               *---*
+       |      /     \             /     \
+       |     /       \           /       \
+    93 |  *-/         \---*---*-/         \---*
+       |
+       +--|---|---|---|---|---|---|---|--------> projection
+          0   1   2   3   4   5   6   7
+
+Note the OVERLAP at sweep boundaries: the last projection of one sweep and the
+first projection of the next sweep share the same Z position. This is by design
+— each sweep starts from the last projection's Z rather than one step ahead,
+to avoid gaps in the vertical sampling.
+
+
+6. STATE TRACKING BETWEEN SWEEPS
+--------------------------------------------------------------------------------
+
+The script maintains three state variables across sweeps:
+
+  cumulative_angle:
+    Tracks the total rotation. After each sweep of N projections with angle
+    step dA, this increases by N * dA. This becomes the "angular rotation to
+    first projection" for the next sweep.
+
+  cumulative_z:
+    Tracks the net vertical displacement from the initial Z. After each sweep,
+    this increases by (N - 1) * translation, where N is the number of
+    projections and translation is the signed step. The (N-1) factor is because
+    N projections have (N-1) steps between them — the first projection is at
+    the starting Z, not one step ahead.
+
+    Why (N-1) and not N:
+      With 2 projections and +5 cm translation:
+        Projection 0: Z = start
+        Projection 1: Z = start + 5    (1 step, not 2)
+      The next sweep starts at Z = start + 5 (the last projection's Z).
+
+  current_translation:
+    The signed translation step. Multiplied by -1 after each sweep to flip
+    the vertical direction.
+
+
+7. USAGE
+--------------------------------------------------------------------------------
+
+Command line:
+
+    python generate_ct_sweeps.py <template.in> <num_sweeps> <total_z> \
+                                  <z_step> [-o output_dir]
+
+Arguments:
+
+    template.in             Base MC-GPU input file with all fixed parameters
+    num_sweeps              Number of vertical sweeps in a full 360-degree rotation
+    total_z                 Total vertical distance per sweep [cm]
+    z_step                  Vertical step between projections [cm]; sign sets
+                            initial direction (+Z = up, -Z = down); flips
+                            automatically each sweep
+    -o output_dir           Directory for generated files (default: template dir)
+
+Example:
+
+    python generate_ct_sweeps.py test.in 8 25.0 5.0 -o ct_scan/
+
+    This generates:
+      - n_steps = round(25/5) = 5
+      - projections_per_sweep = 5 + 1 = 6
+      - angle_per_sweep = 360/8 = 45 deg
+      - angle_between = 45/6 = 7.5 deg (DERIVED)
+      - total_projections = 6 x 8 = 48
+      - 8 sweep .in files
+      - ct_scan/run_ct_scan.sh to execute them sequentially
+
+The script prints a full summary of all derived quantities before generating
+files, so you can verify the geometry before running the simulation.
+
+
+8. OUTPUT FILES
+--------------------------------------------------------------------------------
+
+For each sweep, the script generates:
+
+    sweep_NNNN.in           MC-GPU input file with updated parameters
+                            (NNNN = zero-padded sweep index)
+
+The output image files are named:
+
+    <base_name>_sweepNNNN   where <base_name> comes from the template's
+                            OUTPUT IMAGE FILE NAME parameter
+
+Additionally, a shell script is generated:
+
+    run_ct_scan.sh          Runs MC-GPU on each .in file sequentially:
+                            ./MC-GPU_v1.5b.x sweep_0000.in
+                            ./MC-GPU_v1.5b.x sweep_0001.in
+                            ...
+
+
+9. ASSUMPTIONS AND LIMITATIONS
+--------------------------------------------------------------------------------
+
+  - The rotation axis, source-to-axis distance, and all other tomographic
+    parameters are assumed constant across the full scan. Only the parameters
+    listed in Section 3 change between sweeps.
+
+  - The angle between projections is DERIVED, not an input. It is calculated
+    to ensure projections divide evenly into each sweep's angular range. The
+    actual angular step may differ slightly from what you might expect if
+    total_z / z_step does not divide evenly (due to rounding).
+
+  - The script assumes the rotation axis is aligned with Z (as is typical for
+    body CT). The "translation along rotation axis" in MC-GPU moves the source
+    along this axis, which corresponds to the Z component of the source position.
+
+  - The script parses the .in file by matching comment keywords (e.g.,
+    "SOURCE POSITION", "NUMBER OF PROJECTIONS"). If the comment format in the
+    template differs significantly from the standard MC-GPU format, the parsing
+    may fail. The keywords matched are:
+      * "SOURCE POSITION"
+      * "NUMBER OF PROJECTIONS"
+      * "ANGULAR ROTATION TO FIRST PROJECTION"
+      * "TRANSLATION ALONG ROTATION AXIS"
+      * "OUTPUT IMAGE FILE NAME"
+      * "ANGLE BETWEEN PROJECTIONS"
+
+  - Overlap at boundaries: the first projection of each new sweep shares the
+    same Z as the last projection of the previous sweep. If this overlap is
+    undesirable, the script logic can be changed to advance by N steps instead
+    of (N-1) — see Section 6.
+
+================================================================================

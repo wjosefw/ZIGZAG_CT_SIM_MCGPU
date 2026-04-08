@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import numpy as np
 import parallelproj
@@ -9,8 +10,22 @@ ELEMENT_Z = {
     "Hydrogen": 1, "Carbon": 6, "Nitrogen": 7, "Oxygen": 8,
     "Magnesium": 12, "Phosphorus": 15, "Sulfur": 16, "Chlorine": 17,
     "Argon": 18, "Calcium": 20, "Sodium": 11, "Potassium": 19,
-    "Titanium": 22,
+    "Titanium": 22, "Copper": 29, "Zinc": 30, "Silver": 47, "Tin": 50,
 }
+
+ELEMENT_ALIASES = {
+    "Phosphor": "Phosphorus",
+}
+
+
+def _element_name_to_z(element_name):
+    canonical_name = ELEMENT_ALIASES.get(element_name, element_name)
+    if canonical_name not in ELEMENT_Z:
+        raise ValueError(
+            f"Unknown element '{element_name}' (canonical '{canonical_name}'). "
+            "Extend ELEMENT_Z/ELEMENT_ALIASES in utils.py."
+        )
+    return ELEMENT_Z[canonical_name]
 
 
 def parse_xcat_log(log_path):
@@ -105,7 +120,7 @@ def load_schneider_materials(txt_path="HUtoMaterialSchneider.txt"):
     compositions_by_id = {
         mid: sorted(
             [
-                {"Z": ELEMENT_Z[name], "weight_fraction": float(w)}
+                {"Z": _element_name_to_z(name), "weight_fraction": float(w)}
                 for name, w in zip(element_names, material_weights[mid])
                 if w > 0
             ],
@@ -118,6 +133,109 @@ def load_schneider_materials(txt_path="HUtoMaterialSchneider.txt"):
         "element_names": element_names,
         "hu_material_sections": hu_sections,
         "compositions_by_id": compositions_by_id,
+    }
+
+
+def load_bern_materials(txt_path="Bern_materials.txt"):
+    """Load Bern material definitions from text file.
+
+    Returns:
+      {
+        "materials": [
+          {"id", "name", "density_g_cm3", "elements": [{"Z", "weight_fraction"}]}
+        ],
+        "compositions_by_id": {id: elements},
+        "densities_by_id": {id: density_g_cm3},
+        "names_by_id": {id: name},
+      }
+    """
+    header_re = re.compile(
+        r"^([A-Za-z0-9_]+):\s*d=([0-9]*\.?[0-9]+)\s*(mg/cm3|g/cm3)\s*;\s*n=(\d+)\s*;\s*$"
+    )
+    element_re = re.compile(r"^\+el:\s*name=([^;]+);\s*f=([0-9]*\.?[0-9]+)\s*$")
+
+    materials = []
+    current = None
+
+    def finalize_current(material):
+        if material is None:
+            return
+        expected = material["n_expected"]
+        found = len(material["elements"])
+        if found != expected:
+            raise ValueError(
+                f"Material '{material['name']}' declares n={expected}, found {found} elements."
+            )
+
+        wf_sum = sum(e["weight_fraction"] for e in material["elements"])
+        if abs(wf_sum - 1.0) > 1e-3:
+            raise ValueError(
+                f"Material '{material['name']}' weight fractions sum to {wf_sum:.6f}, expected 1.0."
+            )
+
+        material["elements"] = sorted(material["elements"], key=lambda x: x["Z"])
+        del material["n_expected"]
+        materials.append(material)
+
+    for raw_line in Path(txt_path).read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        header_match = header_re.match(line)
+        if header_match:
+            finalize_current(current)
+
+            name = header_match.group(1)
+            density_value = float(header_match.group(2))
+            density_unit = header_match.group(3)
+            n_expected = int(header_match.group(4))
+
+            if density_unit == "mg/cm3":
+                density_g_cm3 = density_value / 1000.0
+            elif density_unit == "g/cm3":
+                density_g_cm3 = density_value
+            else:
+                raise ValueError(f"Unsupported density unit '{density_unit}' in line: {line}")
+
+            current = {
+                "name": name,
+                "density_g_cm3": density_g_cm3,
+                "n_expected": n_expected,
+                "elements": [],
+            }
+            continue
+
+        element_match = element_re.match(line)
+        if element_match:
+            if current is None:
+                raise ValueError(f"Found element line before any material header: {line}")
+            element_name = element_match.group(1).strip()
+            weight_fraction = float(element_match.group(2))
+            current["elements"].append(
+                {
+                    "Z": _element_name_to_z(element_name),
+                    "weight_fraction": weight_fraction,
+                }
+            )
+            continue
+
+        raise ValueError(f"Unrecognized Bern material line: {line}")
+
+    finalize_current(current)
+
+    for idx, material in enumerate(materials, start=1):
+        material["id"] = idx
+
+    compositions_by_id = {m["id"]: m["elements"] for m in materials}
+    densities_by_id = {m["id"]: m["density_g_cm3"] for m in materials}
+    names_by_id = {m["id"]: m["name"] for m in materials}
+
+    return {
+        "materials": materials,
+        "compositions_by_id": compositions_by_id,
+        "densities_by_id": densities_by_id,
+        "names_by_id": names_by_id,
     }
 
 
@@ -228,6 +346,43 @@ def write_material_input(output_dir, material_data):
         filepath.write_text("\n".join(lines) + "\n")
 
     print(f"Wrote {len(material_data)} .in files to {output_dir}/")
+
+
+def write_named_material_input(output_dir, materials):
+    """Write one .in file per material, using material names for file and .mat names."""
+    out = Path(output_dir)
+    out.mkdir(exist_ok=True)
+
+    for material in materials:
+        name = material["name"]
+        elements = material["elements"]
+        density = material["density_g_cm3"]
+
+        lines = []
+        lines.append("1")          # Enter from keyboard
+        lines.append(name)         # Material name
+        n = len(elements)
+        lines.append(str(n))       # Number of elements
+
+        if n == 1:
+            # Pure element: no weight fraction prompt
+            lines.append(str(elements[0]["Z"]))
+        else:
+            # Compound: fraction by weight
+            lines.append("2")
+            for entry in elements:
+                lines.append(str(entry["Z"]))
+                lines.append(f"{entry['weight_fraction']:.6f}")
+
+        lines.append("2")                  # Don't change I
+        lines.append(f"{density:.6f}")     # Density in g/cm3
+        lines.append("2")                  # Don't change Fcb/Wcb
+        lines.append(f"{name}.mat")        # Output filename
+
+        filepath = out / f"{name}.in"
+        filepath.write_text("\n".join(lines) + "\n")
+
+    print(f"Wrote {len(materials)} named .in files to {output_dir}/")
 
 
 def mlem(xstart, xend, measurements, img_dim, img_origin, voxel_size, num_iter=50):
