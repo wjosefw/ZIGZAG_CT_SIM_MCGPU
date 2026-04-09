@@ -8,7 +8,7 @@ import array_api_compat.cupy as xp
 
 import parallelproj
 from array_api_compat import to_device
-from utils import mlem
+from utils import sirt
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -17,6 +17,9 @@ if __name__ == "__main__":
     parser.add_argument("--img_size",   required=True, nargs=3, type=int,   metavar=("N0", "N1", "N2"), help="Image dimensions in voxels")
     parser.add_argument("--voxel_size", required=True, nargs=3, type=float, metavar=("DX", "DY", "DZ"), help="Voxel size in cm")
     parser.add_argument("--img_origin", required=True, nargs=3, type=float, metavar=("X0", "Y0", "Z0"), help="World coordinate of center of voxel [0,0,0] in cm")
+    parser.add_argument("--num_iter", type=int, default=15, help="Number of reconstruction iterations")
+    parser.add_argument("--relaxation", type=float, default=1.0, help="SIRT relaxation factor")
+    parser.add_argument("--relres_tol", type=float, default=None, help="Early stop SIRT when ||Ax-b||/||b|| <= tol")
     args = parser.parse_args()
 
     if "numpy" in xp.__name__:
@@ -47,7 +50,13 @@ if __name__ == "__main__":
     print(f"Forward projection: shape={y.shape}, nonzero={(y > 0).sum()}, max={y.max():.4f}")
 
     # ── Reconstruction ────────────────────────────────────────────────────────────
-    x = mlem(xstart, xend, y, img_dim, img_origin, voxel_size, num_iter=15)
+    x = sirt(
+        xstart, xend, y, img_dim, img_origin, voxel_size,
+        num_iter=args.num_iter,
+        relaxation=args.relaxation,
+        monitor_every=5,
+        relres_tol=args.relres_tol,
+    )
 
     # ── Save reconstruction as raw ────────────────────────────────────────────────
     # Transposes are just a convention: parallelproj uses (x,y,z), phantoms are stored as (z,y,x)
