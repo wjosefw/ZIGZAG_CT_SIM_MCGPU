@@ -142,24 +142,44 @@ def compute_detector_pixels(source_pos, direction, sdd, width_x, height_z,
 # Raw file reading
 # ---------------------------------------------------------------------------
 
-def read_raw_projection(filepath, nx, nz):
+def read_raw_projection(filepath, nx, nz, signal_channel="total"):
     """
-    Read the first image (scatter + primaries) from an MC-GPU .raw file.
+    Read one image channel from an MC-GPU .raw file.
 
-    Each .raw file contains two images back-to-back (total signal, primaries
-    only), each nx*nz float32 values.  We read only the first.
+    Each .raw file contains two images back-to-back:
+      - channel 0: total signal (scatter + primaries)
+      - channel 1: primaries only
 
     Returns array of shape (nz, nx).
     """
-    data = np.fromfile(filepath, dtype=np.float32, count=nx * nz)
-    return data.reshape(nz, nx)
+    data = np.fromfile(filepath, dtype=np.float32, count=2 * nx * nz)
+    if data.size < nx * nz:
+        raise ValueError(
+            f"Raw file too small for one image: {filepath} "
+            f"(got {data.size}, need at least {nx * nz})"
+        )
+
+    # Backward compatibility: if only one image is present, treat it as total.
+    if data.size < 2 * nx * nz:
+        if signal_channel != "total":
+            raise ValueError(
+                f"Raw file does not contain primaries-only channel: {filepath}"
+            )
+        return data[: nx * nz].reshape(nz, nx)
+
+    data = data.reshape(2, nz, nx)
+    if signal_channel == "total":
+        return data[0]
+    if signal_channel == "primary":
+        return data[1]
+    raise ValueError(f"Unknown signal_channel='{signal_channel}'")
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main(in_root, results_dir, results_root, blank_results_root):
+def main(in_root, results_dir, results_root, blank_results_root, signal_channel):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     results_dir = os.path.join(base_dir, results_dir)
 
@@ -240,7 +260,9 @@ def main(in_root, results_dir, results_root, blank_results_root):
             )
 
             # Pixel values -- shape (nz, nx)
-            phantom_values = read_raw_projection(raw_file, nx, nz)
+            phantom_values = read_raw_projection(
+                raw_file, nx, nz, signal_channel=signal_channel
+            )
 
             # Find matching blank projection
             proj_suffix = os.path.basename(header_file).replace(
@@ -254,7 +276,9 @@ def main(in_root, results_dir, results_root, blank_results_root):
                 raise FileNotFoundError(
                     f"Blank raw file not found: {blank_raw}"
                 )
-            blank_values = read_raw_projection(blank_raw, nx, nz)
+            blank_values = read_raw_projection(
+                blank_raw, nx, nz, signal_channel=signal_channel
+            )
 
             # Normalize: attenuation = ln(blank / phantom), clipped to >= 0
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -315,5 +339,17 @@ if __name__ == "__main__":
         help="Root name for blank (air) result files (e.g. 'projection_blank' "
              "finds projection_blank_{sweep_tag}_*)",
     )
+    parser.add_argument(
+        "--signal-channel",
+        choices=("total", "primary"),
+        default="total",
+        help="Signal channel from MC-GPU raw file: total=scatter+primary, primary=primary-only",
+    )
     args = parser.parse_args()
-    main(args.in_root, args.results_dir, args.results_root, args.blank_results_root)
+    main(
+        args.in_root,
+        args.results_dir,
+        args.results_root,
+        args.blank_results_root,
+        args.signal_channel,
+    )
