@@ -15,7 +15,9 @@ Detector pixel world positions are computed from:
 Where X_det and Z_det are the detector plane axes derived from the beam
 direction and the rotation axis.
 
-Output is saved as a float32 numpy binary file (.npy).
+Outputs are saved as float32 numpy binary files (.npy):
+  - listmode_data.npy: one row per detector pixel
+  - projection_geometry.npy: one row per projection with source and detector center
 """
 
 import numpy as np
@@ -35,11 +37,9 @@ def parse_header(filepath):
         text = f.read()
 
     m = re.search(
-        r"projection\s+(\d+)\s+of\s+(\d+).*?angle\s*=\s*([\d.]+)", text
+        r"projection\s+\d+\s+of\s+\d+.*?angle\s*=\s*([\d.]+)", text
     )
-    proj_num = int(m.group(1))
-    total_proj = int(m.group(2))
-    angle_deg = float(m.group(3))
+    angle_deg = float(m.group(1))
 
     m = re.search(
         r"Focal spot position = \(([-\d.]+),([-\d.]+),([-\d.]+)\).*?"
@@ -53,8 +53,6 @@ def parse_header(filepath):
     nx, nz = int(m.group(1)), int(m.group(2))
 
     return {
-        "proj_num": proj_num,
-        "total_proj": total_proj,
         "angle_deg": angle_deg,
         "source_pos": source_pos,
         "direction": direction,
@@ -138,6 +136,11 @@ def compute_detector_pixels(source_pos, direction, sdd, width_x, height_z,
     return positions  # (nz, nx, 3)
 
 
+def compute_detector_center(source_pos, direction, sdd):
+    """Compute detector center world coordinates for one projection."""
+    return source_pos + direction * sdd
+
+
 # ---------------------------------------------------------------------------
 # Raw file reading
 # ---------------------------------------------------------------------------
@@ -203,6 +206,8 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
         print(f"Found {len(sweep_in_files)} sweep input files")
 
     all_rows = []
+    projection_rows = []
+    projection_counter = 0
 
     for sweep_file in sweep_in_files:
         sweep_name = os.path.splitext(os.path.basename(sweep_file))[0]
@@ -237,10 +242,12 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
 
             nx, nz = info["nx"], info["nz"]
             n_pixels = nx * nz
+            det_center = compute_detector_center(
+                info["source_pos"], info["direction"], params["sdd"]
+            )
 
             print(
-                f"  Projection {info['proj_num']}/{info['total_proj']} "
-                f"angle={info['angle_deg']:.1f}° "
+                f"  Projection angle={info['angle_deg']:.1f}° "
                 f"source=({info['source_pos'][0]:.1f}, "
                 f"{info['source_pos'][1]:.1f}, "
                 f"{info['source_pos'][2]:.1f})"
@@ -301,16 +308,47 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
             rows[:, 6] = val_flat
 
             all_rows.append(rows)
+            # One explicit geometry row per projection:
+            # [proj_idx, angle_deg, src_x, src_y, src_z,
+            #  det_center_x, det_center_y, det_center_z]
+            projection_rows.append(
+                np.array(
+                    [
+                        projection_counter,
+                        info["angle_deg"],
+                        info["source_pos"][0],
+                        info["source_pos"][1],
+                        info["source_pos"][2],
+                        det_center[0],
+                        det_center[1],
+                        det_center[2],
+                    ],
+                    dtype=np.float32,
+                )
+            )
+            projection_counter += 1
 
     # Stack everything
     result = np.vstack(all_rows)
     print(f"\nTotal listmode entries: {result.shape[0]:,}")
     print(f"Columns: src_x, src_y, src_z, det_x, det_y, det_z, value")
 
+    projection_geometry = np.vstack(projection_rows)
+    print(f"Projection columns: proj_idx, angle_deg, "
+        "src_x, src_y, src_z, det_center_x, det_center_y, det_center_z"
+    )
+    
     # Save
     out_path = os.path.join(base_dir, "listmode_data.npy")
     np.save(out_path, result)
     print(f"Saved to {out_path} ({os.path.getsize(out_path) / 1e6:.1f} MB)")
+
+
+    projection_out_path = os.path.join(base_dir, "projection_geometry.npy")
+    np.save(projection_out_path, projection_geometry)
+    print(f"Saved to {projection_out_path} "
+          f"({os.path.getsize(projection_out_path) / 1e6:.1f} MB)"
+    )
 
 
 if __name__ == "__main__":
