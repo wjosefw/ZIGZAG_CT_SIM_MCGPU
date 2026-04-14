@@ -6,83 +6,23 @@ This script splits a full scan into multiple sweeps (alternating up/down),
 maintaining rotation continuity across sweeps.
 """
 
-import re
 import os
 import argparse
 
-
-def parse_template(filepath):
-    """Read the template .in file and return its lines."""
-    with open(filepath) as f:
-        return f.readlines()
-
-
-def find_and_replace_value(lines, comment_keyword, new_value_str):
-    """Find a line by its trailing comment keyword and replace the leading value."""
-    for i, line in enumerate(lines):
-        if comment_keyword in line and not line.strip().startswith('#'):
-            match = re.match(r'^(\s*)(.*?)(#.*)', line)
-            if match:
-                indent, _old_val, comment = match.groups()
-                lines[i] = f"{indent}{new_value_str}   {comment}\n"
-            return lines
-    raise ValueError(f"Could not find line with comment keyword: {comment_keyword}")
+from Utils_Sim_Listmode import (
+    parse_template,
+    get_initial_z,
+    get_output_base_name,
+    update_source_z,
+    update_num_projections,
+    update_angular_rotation_to_first,
+    update_translation_along_axis,
+    update_output_name,
+    update_angle_between_projections,
+)
 
 
-def update_source_z(lines, new_z):
-    """Update the Z component of SOURCE POSITION."""
-    for i, line in enumerate(lines):
-        if 'SOURCE POSITION' in line and not line.strip().startswith('#'):
-            match = re.match(r'^(\s*)([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)(.*)', line)
-            if match:
-                indent, x, y, _z, rest = match.groups()
-                lines[i] = f"{indent}{x}  {y}   {new_z:.6f}{rest}\n"
-            return lines
-    raise ValueError("Could not find SOURCE POSITION line")
-
-
-def update_num_projections(lines, n_proj):
-    return find_and_replace_value(lines, 'NUMBER OF PROJECTIONS', str(n_proj))
-
-
-def update_angular_rotation_to_first(lines, angle_deg):
-    return find_and_replace_value(lines, 'ANGULAR ROTATION TO FIRST PROJECTION', f"{angle_deg:.6f}")
-
-
-def update_translation_along_axis(lines, translation_cm):
-    return find_and_replace_value(lines, 'TRANSLATION ALONG ROTATION AXIS', f"{translation_cm:.6f}")
-
-
-def update_output_name(lines, name):
-    return find_and_replace_value(lines, 'OUTPUT IMAGE FILE NAME', name)
-
-
-def update_angle_between_projections(lines, angle_deg):
-    return find_and_replace_value(lines, 'ANGLE BETWEEN PROJECTIONS', f"{angle_deg:.6f}")
-
-
-def get_initial_z(lines):
-    """Extract the initial Z coordinate from SOURCE POSITION."""
-    for line in lines:
-        if 'SOURCE POSITION' in line and not line.strip().startswith('#'):
-            match = re.match(r'^\s*([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)', line)
-            if match:
-                return float(match.group(3))
-    raise ValueError("Could not find SOURCE POSITION line")
-
-
-def get_output_base_name(lines):
-    """Extract the base output name from the template."""
-    for line in lines:
-        if 'OUTPUT IMAGE FILE NAME' in line and not line.strip().startswith('#'):
-            match = re.match(r'^\s*(\S+)', line)
-            if match:
-                return match.group(1)
-    raise ValueError("Could not find OUTPUT IMAGE FILE NAME line")
-
-
-def generate_sweeps(template_file, num_sweeps, total_z, z_step,
-                    output_dir=None):
+def main(template_file, num_sweeps, total_z, z_step, output_dir=None):
     """Generate .in files for each sweep and a shell script to run them.
 
     Parameters
@@ -220,5 +160,5 @@ if __name__ == "__main__":
                         help="Output directory (default: same as template)")
     args = parser.parse_args()
 
-    generate_sweeps(args.template, args.num_sweeps, args.total_z,
-                    args.z_step, args.output_dir)
+    main(args.template, args.num_sweeps, args.total_z,
+         args.z_step, args.output_dir)
