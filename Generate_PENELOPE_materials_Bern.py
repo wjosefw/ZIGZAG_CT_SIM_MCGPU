@@ -5,50 +5,8 @@ from Bern_materials.txt in both .in and .mat file names.
 """
 
 import argparse
-import shutil
-import subprocess
-from pathlib import Path
 
-from utils import load_bern_materials, write_named_material_input
-
-
-def run_material_creation(input_dir, output_dir, pendbase_dir):
-    """Run material.x for each Bern .in file and move resulting .mat files."""
-    input_dir = Path(input_dir).resolve()
-    output_dir = Path(output_dir).resolve()
-    pendbase_dir = Path(pendbase_dir).resolve()
-    material_x = pendbase_dir / "material.x"
-
-    if not material_x.exists():
-        raise FileNotFoundError(f"material.x not found at: {material_x}")
-
-    in_files = sorted(input_dir.glob("*.in"))
-    if not in_files:
-        raise FileNotFoundError(f"No .in files found in {input_dir}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    for in_file in in_files:
-        mat_name = f"{in_file.stem}.mat"
-        print(f"Processing {in_file} -> {output_dir / mat_name} ...")
-        with in_file.open("r") as f_in:
-            subprocess.run(
-                [str(material_x)],
-                stdin=f_in,
-                cwd=str(pendbase_dir),
-                check=True,
-            )
-
-        created_mat = pendbase_dir / mat_name
-        if not created_mat.exists():
-            raise FileNotFoundError(
-                f"Expected output file not created: {created_mat} "
-                f"(input file: {in_file})"
-            )
-
-        shutil.move(str(created_mat), str(output_dir / mat_name))
-
-    print(f"Created {len(in_files)} .mat files in {output_dir}")
+from Utils_Materials import load_bern_materials, run_material_creation, write_named_material_input
 
 
 def main(

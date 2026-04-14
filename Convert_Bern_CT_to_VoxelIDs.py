@@ -6,32 +6,7 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 
-from utils import load_bern_materials
-
-
-def convert_attenuation_map_to_hu(attenuation_map, kVp=100):
-    """Convert attenuation map at 511 keV to HU using the bilinear transformation.
-
-    From https://aapm.onlinelibrary.wiley.com/doi/10.1118/1.2174132
-    """
-    kVp_params = {
-        80:  {"a": 3.64e-5, "b": 6.26e-2, "BP": 50},
-        100: {"a": 4.43e-5, "b": 5.44e-2, "BP": 52},
-        110: {"a": 4.92e-5, "b": 4.88e-2, "BP": 43},
-        120: {"a": 5.10e-5, "b": 4.71e-2, "BP": 47},
-        130: {"a": 5.51e-5, "b": 4.24e-2, "BP": 37},
-        140: {"a": 5.64e-5, "b": 4.08e-2, "BP": 30},
-    }
-    if kVp not in kVp_params:
-        raise ValueError(f"Unsupported kVp {kVp}. Supported: {sorted(kVp_params)}")
-    p = kVp_params[kVp]
-    breakpoint_att = 9.6e-5 * (p["BP"] + 1000)
-    hu = np.where(
-        attenuation_map <= breakpoint_att,
-        attenuation_map / 9.6e-5 - 1000,
-        (attenuation_map - p["b"]) / p["a"] - 1000,
-    )
-    return hu.astype(np.float32)
+from Utils_Materials import load_bern_materials, convert_attenuation_map_to_hu
 
 
 def main(input_path, output_path=None, output_voxel_path=None, output_blank_path=None, kVp=100):
