@@ -178,6 +178,25 @@ def read_raw_projection(filepath, nx, nz, signal_channel="total"):
     raise ValueError(f"Unknown signal_channel='{signal_channel}'")
 
 
+def read_raw_both_channels(filepath, nx, nz):
+    """
+    Read both channels from an MC-GPU .raw file.
+
+    Returns array of shape (nx, nz, 2):
+      - [..., 0]: total signal (scatter + primaries)
+      - [..., 1]: primaries only
+    """
+    data = np.fromfile(filepath, dtype=np.float32, count=2 * nx * nz)
+    if data.size < 2 * nx * nz:
+        raise ValueError(
+            f"Raw file does not contain both channels: {filepath} "
+            f"(got {data.size}, need {2 * nx * nz})"
+        )
+    data = data.reshape(2, nz, nx)
+    # Transpose from (2, nz, nx) -> (nx, nz, 2)
+    return data.transpose(2, 1, 0)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -207,6 +226,7 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
 
     all_rows = []
     projection_rows = []
+    projection_images = []   # each entry: (nx, nz, 2)
     projection_counter = 0
 
     for sweep_file in sweep_in_files:
@@ -266,11 +286,6 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
                 params["rot_axis"],
             )
 
-            # Pixel values -- shape (nz, nx)
-            phantom_values = read_raw_projection(
-                raw_file, nx, nz, signal_channel=signal_channel
-            )
-
             # Find matching blank projection
             proj_suffix = os.path.basename(header_file).replace(
                 f"{results_root}{sweep_tag}", ""
@@ -283,14 +298,20 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
                 raise FileNotFoundError(
                     f"Blank raw file not found: {blank_raw}"
                 )
-            blank_values = read_raw_projection(
-                blank_raw, nx, nz, signal_channel=signal_channel
-            )
 
-            # Normalize: attenuation = ln(blank / phantom), clipped to >= 0
+            # Read both channels for phantom and blank -- shape (nx, nz, 2)
+            phantom_both = read_raw_both_channels(raw_file, nx, nz)
+            blank_both = read_raw_both_channels(blank_raw, nx, nz)
+
+            # Normalize both channels: ln(blank / phantom), clipped to >= 0
             with np.errstate(divide="ignore", invalid="ignore"):
-                values = np.log(blank_values / phantom_values)
-            values = np.clip(values, 0, None)
+                log_both = np.log(blank_both / phantom_both)
+            log_both = np.clip(log_both, 0, None)   # shape (nx, nz, 2)
+
+            # Select the channel used for listmode values.
+            # log_both is (nx, nz, 2); det_pos is (nz, nx, 3) -- transpose needed.
+            channel_idx = 0 if signal_channel == "total" else 1
+            values = log_both[:, :, channel_idx].T   # (nz, nx)
 
             # Flatten to (n_pixels, 3) and (n_pixels,)
             det_flat = det_pos.reshape(-1, 3)
@@ -308,6 +329,8 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
             rows[:, 6] = val_flat
 
             all_rows.append(rows)
+            # Log-normalized images for both channels -- shape (nx, nz, 2)
+            projection_images.append(log_both)
             # One explicit geometry row per projection:
             # [proj_idx, angle_deg, src_x, src_y, src_z,
             #  det_center_x, det_center_y, det_center_z]
@@ -348,6 +371,14 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
     np.save(projection_out_path, projection_geometry)
     print(f"Saved to {projection_out_path} "
           f"({os.path.getsize(projection_out_path) / 1e6:.1f} MB)"
+    )
+
+    # Stack raw images: list of N x (nx, nz, 2) -> (nx, nz, N, 2)
+    images_array = np.stack(projection_images, axis=2)
+    images_out_path = os.path.join(base_dir, "projection_images.npy")
+    np.save(images_out_path, images_array)
+    print(f"Saved projection images {images_array.shape} to {images_out_path} "
+          f"({os.path.getsize(images_out_path) / 1e6:.1f} MB)"
     )
 
 
