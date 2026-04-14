@@ -23,11 +23,12 @@ Thumbs.db
 # PENELOPE / MC-GPU data
 pendbase/
 results/
-MC-GPU_materials/
+MC-GPU_materials_bern/
 spectrum/
 XCAT/
 Deprecated/
-material_list.txt
+Deprecated/Schneider
+material_list_bern.txt
 view_raw.ipynb
 MC-GPU_v1.5b.x
 MC-GPU_create_material_data.x
