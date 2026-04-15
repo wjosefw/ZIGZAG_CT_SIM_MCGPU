@@ -63,7 +63,7 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
 
     all_rows = []
     projection_rows = []
-    projection_images = []   # each entry: (nx, nz, 2)
+    projection_images = []   # each entry: (nx, nz, 3): [total, primary, blank]
     projection_counter = 0
 
     for sweep_file in sweep_in_files:
@@ -166,8 +166,12 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
             rows[:, 6] = val_flat
 
             all_rows.append(rows)
-            # Log-normalized images for both channels -- shape (nx, nz, 2)
-            projection_images.append(log_both)
+            # Raw counts: [total (scatter+primary), primary, blank] -- shape (nx, nz, 3)
+            raw_counts = np.stack(
+                [phantom_both[:, :, 0], phantom_both[:, :, 1], blank_both[:, :, 0]],
+                axis=2,
+            )
+            projection_images.append(raw_counts)
             # One explicit geometry row per projection:
             # [proj_idx, angle_deg, src_x, src_y, src_z,
             #  det_center_x, det_center_y, det_center_z]
@@ -215,7 +219,8 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
     images_out_path = os.path.join(base_dir, "projection_images.npy")
     np.save(images_out_path, images_array)
     print(f"Saved projection images {images_array.shape} to {images_out_path} "
-          f"({os.path.getsize(images_out_path) / 1e6:.1f} MB)"
+          f"({os.path.getsize(images_out_path) / 1e6:.1f} MB) "
+          f"[channels: total, primary, blank]"
     )
 
 
