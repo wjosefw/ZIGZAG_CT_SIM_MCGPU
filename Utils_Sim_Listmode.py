@@ -91,9 +91,10 @@ def compute_detector_pixels(source_pos, direction, sdd, width_x, height_z,
     det_center = source_pos + direction * sdd
 
     # Detector plane axes
-    # MC-GPU azimuthal direction is cross(direction, rot_axis) — opposite sign
-    # to cross(rot_axis, direction).
-    x_det = np.cross(direction, rot_axis)
+    # Using cross(rot_axis, direction) to match ASTRA's pixel-0 convention (-X side).
+    # Raw X read order is also flipped in read_raw_both_channels to keep
+    # each measurement assigned to the correct world position.
+    x_det = np.cross(rot_axis, direction)
     x_det /= np.linalg.norm(x_det)
     z_det = rot_axis.copy()
 
@@ -125,38 +126,6 @@ def compute_detector_center(source_pos, direction, sdd):
 # Raw file reading
 # ---------------------------------------------------------------------------
 
-def read_raw_projection(filepath, nx, nz, signal_channel="total"):
-    """
-    Read one image channel from an MC-GPU .raw file.
-
-    Each .raw file contains two images back-to-back:
-      - channel 0: total signal (scatter + primaries)
-      - channel 1: primaries only
-
-    Returns array of shape (nz, nx).
-    """
-    data = np.fromfile(filepath, dtype=np.float32, count=2 * nx * nz)
-    if data.size < nx * nz:
-        raise ValueError(
-            f"Raw file too small for one image: {filepath} "
-            f"(got {data.size}, need at least {nx * nz})"
-        )
-
-    # Backward compatibility: if only one image is present, treat it as total.
-    if data.size < 2 * nx * nz:
-        if signal_channel != "total":
-            raise ValueError(
-                f"Raw file does not contain primaries-only channel: {filepath}"
-            )
-        return data[: nx * nz].reshape(nz, nx)
-
-    data = data.reshape(2, nz, nx)
-    if signal_channel == "total":
-        return data[0]
-    if signal_channel == "primary":
-        return data[1]
-    raise ValueError(f"Unknown signal_channel='{signal_channel}'")
-
 
 def read_raw_both_channels(filepath, nx, nz):
     """
@@ -173,6 +142,9 @@ def read_raw_both_channels(filepath, nx, nz):
             f"(got {data.size}, need {2 * nx * nz})"
         )
     data = data.reshape(2, nz, nx)
+    # Flip X axis to match ASTRA pixel-0 convention (paired with x_det sign flip
+    # in compute_detector_pixels so each measurement stays at the correct world position).
+    data = data[:, :, ::-1]
     # Transpose from (2, nz, nx) -> (nx, nz, 2)
     return data.transpose(2, 1, 0)
 

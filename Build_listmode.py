@@ -172,9 +172,21 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
                 axis=2,
             )
             projection_images.append(raw_counts)
+            # u/v pixel-step vectors in world coordinates (same convention as
+            # zigzag_3d ASTRA vectors: u = pix_size_x * x_det,
+            #                          v = pix_size_z * z_det)
+            x_det = np.cross(params["rot_axis"], info["direction"])
+            x_det /= np.linalg.norm(x_det)
+            z_det = params["rot_axis"].copy()
+            pix_size_x = params["width_x"] / nx
+            pix_size_z = params["height_z"] / nz
+            u_world = pix_size_x * x_det
+            v_world = pix_size_z * z_det
+
             # One explicit geometry row per projection:
             # [proj_idx, angle_deg, src_x, src_y, src_z,
-            #  det_center_x, det_center_y, det_center_z]
+            #  det_center_x, det_center_y, det_center_z,
+            #  u_x, u_y, u_z, v_x, v_y, v_z]
             projection_rows.append(
                 np.array(
                     [
@@ -186,6 +198,12 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
                         det_center[0],
                         det_center[1],
                         det_center[2],
+                        u_world[0],
+                        u_world[1],
+                        u_world[2],
+                        v_world[0],
+                        v_world[1],
+                        v_world[2],
                     ],
                     dtype=np.float32,
                 )
@@ -199,7 +217,8 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
 
     projection_geometry = np.vstack(projection_rows)
     print(f"Projection columns: proj_idx, angle_deg, "
-        "src_x, src_y, src_z, det_center_x, det_center_y, det_center_z"
+        "src_x, src_y, src_z, det_center_x, det_center_y, det_center_z, "
+        "u_x, u_y, u_z, v_x, v_y, v_z"
     )
     
     # Save
