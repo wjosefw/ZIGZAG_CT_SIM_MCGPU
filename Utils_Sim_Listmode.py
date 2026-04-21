@@ -206,6 +206,20 @@ def update_angle_between_projections(lines, angle_deg):
     return find_and_replace_value(lines, 'ANGLE BETWEEN PROJECTIONS', f"{angle_deg:.6f}")
 
 
+def update_phantom_file(lines, phantom_path):
+    """Replace the voxelized geometry file path (first non-comment line after
+    the VOXELIZED GEOMETRY FILE section header)."""
+    in_section = False
+    for i, line in enumerate(lines):
+        if 'SECTION VOXELIZED GEOMETRY FILE' in line:
+            in_section = True
+            continue
+        if in_section and line.strip() and not line.strip().startswith('#'):
+            lines[i] = f"{phantom_path}\n"
+            return lines
+    raise ValueError("Could not find voxelized geometry file line")
+
+
 def get_initial_z(lines):
     """Extract the initial Z coordinate from SOURCE POSITION."""
     for line in lines:
