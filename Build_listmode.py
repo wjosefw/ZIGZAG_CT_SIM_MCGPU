@@ -98,7 +98,7 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
                 continue
 
             nx, nz = info["nx"], info["nz"]
-            n_pixels = nx * nz
+
             det_center = compute_detector_center(
                 info["source_pos"], info["direction"], params["sdd"]
             )
@@ -141,26 +141,36 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
             blank_both = read_raw_both_channels(blank_raw, nx, nz)
 
             # Normalize both channels: ln(blank / phantom), clipped to >= 0
-            with np.errstate(divide="ignore", invalid="ignore"):
-                log_both = np.log(blank_both / phantom_both)
+            eps = 0.5
+            log_both = np.log(np.maximum(blank_both, eps) / np.maximum(phantom_both, eps))
             log_both = np.clip(log_both, 0, None)   # shape (nx, nz, 2)
+
+            # Dead pixels: both blank and phantom below half-photon floor -- exclude from listmode
+            dead = (blank_both < eps) & (phantom_both < eps)   # (nx, nz, 2)
 
             # Select the channel used for listmode values.
             # log_both is (nx, nz, 2); det_pos is (nz, nx, 3) -- transpose needed.
             channel_idx = 0 if signal_channel == "total" else 1
             values = log_both[:, :, channel_idx].T   # (nz, nx)
+            dead_mask = dead[:, :, channel_idx].T    # (nz, nx)
 
             # Flatten to (n_pixels, 3) and (n_pixels,)
             det_flat = det_pos.reshape(-1, 3)
             val_flat = values.reshape(-1)
+            live = ~dead_mask.reshape(-1)
+
+            det_flat = det_flat[live]
+            val_flat = val_flat[live]
+
+            n_live = live.sum()
 
             # Source is the same for every pixel in this projection
             src_repeated = np.broadcast_to(
-                info["source_pos"], (n_pixels, 3)
+                info["source_pos"], (n_live, 3)
             ).copy()
 
             # Build rows: [src_x, src_y, src_z, det_x, det_y, det_z, value]
-            rows = np.empty((n_pixels, 7), dtype=np.float32)
+            rows = np.empty((n_live, 7), dtype=np.float32)
             rows[:, 0:3] = src_repeated
             rows[:, 3:6] = det_flat
             rows[:, 6] = val_flat
