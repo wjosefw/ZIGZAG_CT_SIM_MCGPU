@@ -159,7 +159,8 @@ def load_bern_materials(txt_path="Bern_materials.txt"):
 
 # ---------------------------------------------------------------------------
 
-def run_mcgpu_material_creation(mat_input_dir, mcgpu_output_dir, mcgpu_exe):
+def run_mcgpu_material_creation(mat_input_dir, mcgpu_output_dir, mcgpu_exe,
+                                e_min_keV=5, e_max_keV=150, n_points=1495):
     """Run MC-GPU_create_material_data.x for each Bern .mat file."""
     mat_input_dir = Path(mat_input_dir).resolve()
     mcgpu_output_dir = Path(mcgpu_output_dir).resolve()
@@ -175,12 +176,12 @@ def run_mcgpu_material_creation(mat_input_dir, mcgpu_output_dir, mcgpu_exe):
     mcgpu_output_dir.mkdir(parents=True, exist_ok=True)
 
     for mat_file in mat_files:
-        out_file = mcgpu_output_dir / f"{mat_file.stem}_5_150keV.mcgpu"
+        out_file = mcgpu_output_dir / f"{mat_file.stem}_{e_min_keV}_{e_max_keV}keV.mcgpu"
         print(f"Processing {mat_file} -> {out_file} ...")
         # Keep paths short to avoid truncation in MC-GPU interactive input parser.
         mat_rel = os.path.relpath(mat_file, start=mcgpu_output_dir)
         out_name = out_file.name
-        mcgpu_input = f"5000,150000\n1495\n{mat_rel}\n{out_name}\n"
+        mcgpu_input = f"{e_min_keV * 1000},{e_max_keV * 1000}\n{n_points}\n{mat_rel}\n{out_name}\n"
         subprocess.run(
             [str(mcgpu_exe)],
             input=mcgpu_input,
@@ -197,7 +198,8 @@ def run_mcgpu_material_creation(mat_input_dir, mcgpu_output_dir, mcgpu_exe):
 
 # ---------------------------------------------------------------------------
 
-def write_material_list_from_bern(bern_materials, mcgpu_output_dir, material_list_path, material_prefix):
+def write_material_list_from_bern(bern_materials, mcgpu_output_dir, material_list_path, material_prefix,
+                                   e_min_keV=5, e_max_keV=150):
     """Write material_list in MC-GPU format using Bern densities."""
     mcgpu_output_dir = Path(mcgpu_output_dir).resolve()
     material_list_path = Path(material_list_path).resolve()
@@ -211,7 +213,7 @@ def write_material_list_from_bern(bern_materials, mcgpu_output_dir, material_lis
     for voxel_id, material in enumerate(bern_materials):
         name = material["name"]
         density = material["density_g_cm3"]
-        filename = f"{name}_5_150keV.mcgpu"
+        filename = f"{name}_{e_min_keV}_{e_max_keV}keV.mcgpu"
         full_file = mcgpu_output_dir / filename
         if not full_file.exists():
             raise FileNotFoundError(

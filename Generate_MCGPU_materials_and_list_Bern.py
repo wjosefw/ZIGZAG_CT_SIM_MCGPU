@@ -16,6 +16,9 @@ def main(
     mcgpu_output_dir,
     mcgpu_exe,
     material_prefix,
+    e_min_keV=5,
+    e_max_keV=150,
+    n_points=1495,
 ):
     bern = load_bern_materials(bern_path)
     materials = bern["materials"]
@@ -25,6 +28,9 @@ def main(
         mat_input_dir=mat_input_dir,
         mcgpu_output_dir=mcgpu_output_dir,
         mcgpu_exe=mcgpu_exe,
+        e_min_keV=e_min_keV,
+        e_max_keV=e_max_keV,
+        n_points=n_points,
     )
 
     material_list_path = Path.cwd() / "material_list_bern.txt"
@@ -33,6 +39,8 @@ def main(
         mcgpu_output_dir=mcgpu_output_dir,
         material_list_path=material_list_path,
         material_prefix=material_prefix,
+        e_min_keV=e_min_keV,
+        e_max_keV=e_max_keV,
     )
 
 
@@ -68,6 +76,24 @@ if __name__ == "__main__":
             "(default: basename of --mcgpu-output-dir)"
         ),
     )
+    parser.add_argument(
+        "--e-min-keV",
+        type=int,
+        default=5,
+        help="Minimum energy in keV for MC-GPU material data (default: 5)",
+    )
+    parser.add_argument(
+        "--e-max-keV",
+        type=int,
+        default=150,
+        help="Maximum energy in keV for MC-GPU material data (default: 150)",
+    )
+    parser.add_argument(
+        "--n-points",
+        type=int,
+        default=1495,
+        help="Number of energy points for MC-GPU material data (default: 1495)",
+    )
     args = parser.parse_args()
     main(
         bern_path=args.bern_path,
@@ -75,4 +101,7 @@ if __name__ == "__main__":
         mcgpu_output_dir=args.mcgpu_output_dir,
         mcgpu_exe=args.mcgpu_exe,
         material_prefix=args.material_prefix,
+        e_min_keV=args.e_min_keV,
+        e_max_keV=args.e_max_keV,
+        n_points=args.n_points,
     )
