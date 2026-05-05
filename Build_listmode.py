@@ -170,7 +170,7 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
             ).copy()
 
             # Build rows: [src_x, src_y, src_z, det_x, det_y, det_z, value]
-            rows = np.empty((n_live, 7), dtype=np.float32)
+            rows = np.empty((n_live, 7), dtype=np.float64)
             rows[:, 0:3] = src_repeated
             rows[:, 3:6] = det_flat
             rows[:, 6] = val_flat
@@ -214,8 +214,11 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
                         v_world[0],
                         v_world[1],
                         v_world[2],
+                        info["direction"][0],
+                        info["direction"][1],
+                        info["direction"][2],
                     ],
-                    dtype=np.float32,
+                    dtype=np.float64,
                 )
             )
             projection_counter += 1
@@ -228,7 +231,7 @@ def main(in_root, results_dir, results_root, blank_results_root, signal_channel)
     projection_geometry = np.vstack(projection_rows)
     print(f"Projection columns: proj_idx, angle_deg, "
         "src_x, src_y, src_z, det_center_x, det_center_y, det_center_z, "
-        "u_x, u_y, u_z, v_x, v_y, v_z"
+        "u_x, u_y, u_z, v_x, v_y, v_z, dir_x, dir_y, dir_z"
     )
     
     # Save
