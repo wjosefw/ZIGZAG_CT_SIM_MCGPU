@@ -61,6 +61,10 @@ def parse_in_file(filepath):
     tokens = first_token(lines[42])
     offset_x, offset_z = float(tokens[0]), float(tokens[1])
 
+    # Line 56: SOURCE-TO-ROTATION AXIS DISTANCE (= SOD, valid when rotation axis is at origin)
+    tokens = first_token(lines[55])
+    sod = float(tokens[0])
+
     # Line 59: AXIS OF ROTATION
     tokens = first_token(lines[58])
     rot_axis = np.array([float(tokens[0]), float(tokens[1]), float(tokens[2])])
@@ -68,6 +72,7 @@ def parse_in_file(filepath):
 
     return {
         "sdd": sdd,
+        "sod": sod,
         "width_x": width_x,
         "height_z": height_z,
         "offset_x": offset_x,
@@ -184,6 +189,35 @@ def update_source_z(lines, new_z):
                 lines[i] = f"{indent}{x}  {y}   {new_z:.6f}{rest}\n"
             return lines
     raise ValueError("Could not find SOURCE POSITION line")
+
+
+def compute_euler_angles(dir_x, dir_y, dir_z):
+    """
+    RzRyRz Euler angles that rotate the MC-GPU default direction (0,1,0) to
+    (dir_x, dir_y, dir_z). Valid when dir_z ≈ 0 (source-detector in XY plane).
+    Returns (alpha, beta, gamma) in degrees.
+    """
+    alpha = np.degrees(np.arctan2(dir_x, -dir_y))
+    beta  = 0.0
+    gamma = 180.0
+    return alpha, beta, gamma
+
+
+def update_euler_angles(lines, alpha, beta, gamma):
+    """Update the RzRyRz Euler angles for the source beam orientation."""
+    return find_and_replace_value(
+        lines, 'EULER ANGLES', f"{alpha:.6f}   {beta:.6f}   {gamma:.6f}"
+    )
+
+
+def update_source_position(lines, x, y, z):
+    """Update X, Y, Z of SOURCE POSITION."""
+    return find_and_replace_value(lines, 'SOURCE POSITION', f"{x:.8f}  {y:.8f}  {z:.8f}")
+
+
+def update_source_direction(lines, u, v, w):
+    """Update direction cosines U V W."""
+    return find_and_replace_value(lines, 'SOURCE DIRECTION COSINES', f"{u:.8f}  {v:.8f}  {w:.8f}")
 
 
 def update_num_projections(lines, n_proj):
