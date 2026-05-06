@@ -46,7 +46,7 @@ from Utils_Sim_Listmode import (
 def main(template_file, num_sweeps, total_z, z_step,
          phantom_path, phantom_output, blank_path, blank_output,
          mcgpu, results_dir, mode='full',
-         zmin=-55.0, zmax=55.0, phantom_nii=None,
+         zmin=-55.0, zmax=55.0,
          output_dir=None):
 
     if output_dir is None:
@@ -138,9 +138,6 @@ def main(template_file, num_sweeps, total_z, z_step,
     # SUBSET MODE
     # -----------------------------------------------------------------------
     elif mode == 'subset':
-        if phantom_nii is None:
-            raise ValueError("--phantom-nii is required in subset mode")
-
         # Run blank sweeps
         run_sweeps(blank_files, mcgpu)
 
@@ -152,7 +149,7 @@ def main(template_file, num_sweeps, total_z, z_step,
 
         # Group by sweep, find contiguous block per sweep inside Z region
         subsets, z_margin = select_sweep_subsets(
-            header_files, phantom_nii, template_file, z_step, zmin, zmax,
+            header_files, template_file, z_step, zmin, zmax,
         )
 
         blank_subset_prefix   = f"{blank_output}_subset"
@@ -270,8 +267,6 @@ if __name__ == "__main__":
                         help="Min source Z for subset selection [cm] (default: -55)")
     parser.add_argument("--zmax",           type=float, default=55.0,
                         help="Max source Z for subset selection [cm] (default: +55)")
-    parser.add_argument("--phantom-nii",
-                        help="Phantom NIfTI file (required in subset mode)")
     parser.add_argument("-o", "--output-dir", default=None,
                         help="Directory for generated .in files (default: same as template)")
     args = parser.parse_args()
@@ -290,6 +285,5 @@ if __name__ == "__main__":
         mode           = args.mode,
         zmin           = args.zmin,
         zmax           = args.zmax,
-        phantom_nii    = args.phantom_nii,
         output_dir     = args.output_dir,
     )

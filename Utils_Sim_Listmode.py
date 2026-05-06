@@ -72,6 +72,14 @@ def parse_in_file(filepath):
     rot_axis = np.array([float(tokens[0]), float(tokens[1]), float(tokens[2])])
     rot_axis = rot_axis / np.linalg.norm(rot_axis)
 
+    # Lines 74-76: PHANTOM GEOMETRY (offset, nvoxels, voxel size) [cm]
+    tokens = first_token(lines[73])
+    phantom_ox, phantom_oy = float(tokens[0]), float(tokens[1])
+    tokens = first_token(lines[74])
+    phantom_nx, phantom_ny = int(tokens[0]), int(tokens[1])
+    tokens = first_token(lines[75])
+    phantom_dx, phantom_dy = float(tokens[0]), float(tokens[1])
+
     return {
         "sdd": sdd,
         "sod": sod,
@@ -80,6 +88,12 @@ def parse_in_file(filepath):
         "offset_x": offset_x,
         "offset_z": offset_z,
         "rot_axis": rot_axis,
+        "phantom_ox": phantom_ox,
+        "phantom_oy": phantom_oy,
+        "phantom_nx": phantom_nx,
+        "phantom_ny": phantom_ny,
+        "phantom_dx": phantom_dx,
+        "phantom_dy": phantom_dy,
     }
 
 
@@ -395,7 +409,7 @@ def run_sweeps(sweep_files, mcgpu):
     return results
 
 
-def select_sweep_subsets(header_files, phantom_nii, template_file, z_step, zmin, zmax):
+def select_sweep_subsets(header_files, template_file, z_step, zmin, zmax):
     """Group blank headers by sweep and find the contiguous Z-region block per sweep.
 
     Filename pattern expected: {prefix}_sweep_{XXXX}_{YYYY}
@@ -432,8 +446,8 @@ def select_sweep_subsets(header_files, phantom_nii, template_file, z_step, zmin,
     ODD    = params['sdd'] - SOD
     D_size = (nx, nz)
 
-    _, (_, yax, xax) = read_nii(phantom_nii)
-    xax, yax = xax / 10, yax / 10   # mm → cm
+    xax = np.array([params['phantom_ox'], params['phantom_ox'] + params['phantom_nx'] * params['phantom_dx']])
+    yax = np.array([params['phantom_oy'], params['phantom_oy'] + params['phantom_ny'] * params['phantom_dy']])
 
     _, bool_mask, z_margin = subsample_slicewise(
         all_positions, xax, yax,
