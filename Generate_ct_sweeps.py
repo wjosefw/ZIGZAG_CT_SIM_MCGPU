@@ -1,199 +1,303 @@
 """
-Generate multiple MC-GPU input files for a zigzag CT scan.
+Generate multiple MC-GPU input files for a zigzag CT scan and run them.
 
 MC-GPU only supports a fixed vertical translation direction per call.
 This script splits a full scan into multiple sweeps (alternating up/down),
 maintaining rotation continuity across sweeps.
 
-Generates BOTH a phantom scan and a blank scan (for normalization) from the
-same template, plus a shell script that runs the blank first.
+Modes
+-----
+full   (default): generate blank + phantom .in files, run all sweeps, write log.
+subset:           run blank sweeps, parse their headers to find which projections
+                  per sweep fall inside a Z range, copy matching blank files, then
+                  re-simulate each qualifying sweep as one contiguous MC-GPU call
+                  (one initialisation per sweep, not per projection).
 """
 
 import os
+import glob
+import shutil
 import argparse
+import subprocess
 
 from Utils_Sim_Listmode import (
     parse_template,
     get_initial_z,
-    update_source_z,
     update_num_projections,
     update_angular_rotation_to_first,
     update_translation_along_axis,
     update_output_name,
     update_angle_between_projections,
     update_phantom_file,
+    update_source_position,
+    update_source_direction,
+    update_euler_angles,
+    compute_euler_angles,
+    generate_sweeps,
+    run_sweeps,
+    select_sweep_subsets,
 )
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main(template_file, num_sweeps, total_z, z_step,
          phantom_path, phantom_output, blank_path, blank_output,
+         mcgpu, results_dir, mode='full',
+         zmin=-55.0, zmax=55.0, phantom_nii=None,
          output_dir=None):
-    """Generate .in files for both phantom and blank scans plus a runner script.
 
-    Parameters
-    ----------
-    template_file : str
-        Path to the base MC-GPU .in file.
-    num_sweeps : int
-        Number of vertical sweeps in a full 360-degree rotation.
-    total_z : float
-        Total vertical distance per sweep in cm.
-    z_step : float
-        Vertical translation step between projections in cm.
-    phantom_path : str
-        Voxelized geometry file path for the phantom scan.
-    phantom_output : str
-        Output image base name for the phantom scan.
-    blank_path : str
-        Voxelized geometry file path for the blank (normalization) scan.
-    blank_output : str
-        Output image base name for the blank scan.
-    output_dir : str or None
-        Directory for generated files. Defaults to directory of template_file.
-    """
     if output_dir is None:
-        output_dir = os.path.dirname(template_file) or '.'
+        output_dir = os.path.dirname(os.path.abspath(template_file))
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
 
     template_lines = parse_template(template_file)
     initial_z = get_initial_z(template_lines)
 
-    # --- Derive quantities ---
     n_steps = round(total_z / z_step)
     projections_per_sweep = n_steps + 1
     angle_per_sweep = 360.0 / num_sweeps
     angle_between = angle_per_sweep / (projections_per_sweep - 1)
     total_projections = projections_per_sweep * num_sweeps
 
-    # --- Print all quantities ---
-    print("=" * 60)
-    print("  ZIGZAG CT SCAN — PARAMETERS")
-    print("=" * 60)
-    print(f"  Template file:              {template_file}")
-    print(f"  Initial source Z:           {initial_z:.4f} cm")
-    print(f"  Phantom geometry:           {phantom_path}")
-    print(f"  Phantom output base:        {phantom_output}")
-    print(f"  Blank geometry:             {blank_path}")
-    print(f"  Blank output base:          {blank_output}")
-    print("-" * 60)
-    print(f"  INPUT  num_sweeps:          {num_sweeps}")
-    print(f"  INPUT  total_z per sweep:   {total_z:.4f} cm")
-    print(f"  INPUT  z_step:              {z_step:.6f} cm")
-    print("-" * 60)
-    print(f"  DERIVED  steps per sweep:   {n_steps}  "
-          f"(round({total_z}/{z_step}) = round({total_z / z_step:.2f}))")
-    print(f"  DERIVED  projections/sweep: {projections_per_sweep}  "
-          f"(steps + 1 = {n_steps} + 1)")
-    print(f"  DERIVED  angle per sweep:   {angle_per_sweep:.6f} deg  "
-          f"(360 / {num_sweeps})")
-    print(f"  DERIVED  angle between:     {angle_between:.6f} deg  "
-          f"({angle_per_sweep:.2f} / ({projections_per_sweep} - 1))")
-    print(f"  DERIVED  total projections: {total_projections}  "
-          f"({projections_per_sweep} x {num_sweeps})")
-    print(f"  DERIVED  total rotation:    "
-          f"{total_projections * angle_between:.2f} deg")
-    print(f"  Output directory:           {output_dir}")
-    print("=" * 60)
+    param_summary = "\n".join([
+        "=" * 60,
+        "  ZIGZAG CT SCAN — PARAMETERS",
+        "=" * 60,
+        f"  Template file:              {template_file}",
+        f"  Mode:                       {mode}",
+        f"  Initial source Z:           {initial_z:.4f} cm",
+        f"  Phantom geometry:           {phantom_path}",
+        f"  Phantom output base:        {phantom_output}",
+        f"  Blank geometry:             {blank_path}",
+        f"  Blank output base:          {blank_output}",
+        f"  MC-GPU executable:          {mcgpu}",
+        f"  Results directory:          {results_dir}",
+        "-" * 60,
+        f"  INPUT  num_sweeps:          {num_sweeps}",
+        f"  INPUT  total_z per sweep:   {total_z:.4f} cm",
+        f"  INPUT  z_step:              {z_step:.6f} cm",
+        "-" * 60,
+        f"  DERIVED  steps per sweep:   {n_steps}  "
+            f"(round({total_z}/{z_step}) = round({total_z / z_step:.2f}))",
+        f"  DERIVED  projections/sweep: {projections_per_sweep}  "
+            f"(steps + 1 = {n_steps} + 1)",
+        f"  DERIVED  angle per sweep:   {angle_per_sweep:.6f} deg  "
+            f"(360 / {num_sweeps})",
+        f"  DERIVED  angle between:     {angle_between:.6f} deg  "
+            f"({angle_per_sweep:.2f} / ({projections_per_sweep} - 1))",
+        f"  DERIVED  total projections: {total_projections}  "
+            f"({projections_per_sweep} x {num_sweeps})",
+        f"  DERIVED  total rotation:    {total_projections * angle_between:.2f} deg",
+        f"  Output directory:           {output_dir}",
+        "=" * 60,
+    ])
 
-    scans = {}
-    for label, phantom, out_base in [
-        ("blank", blank_path, blank_output),
-        ("phantom", phantom_path, phantom_output),
-    ]:
-        print(f"\n--- {label.upper()} SCAN ---")
-        print(f"\n{'Sweep':>6} | {'Proj':>5} | {'Start Angle':>12} | "
-              f"{'Source Z':>12} | {'Z step':>12} | File")
-        print("-" * 80)
+    # Generate blank sweep files (both modes need them)
+    blank_files, blank_sweep_info = generate_sweeps(
+        template_lines, initial_z, z_step,
+        "blank", blank_output, blank_path, output_dir, results_dir,
+        projections_per_sweep, angle_between, total_projections,
+    )
 
-        cumulative_angle = 0.0
-        cumulative_z = 0.0
-        current_translation = z_step
-        remaining = total_projections
-        sweep = 0
-        sweep_files = []
+    # -----------------------------------------------------------------------
+    # FULL MODE
+    # -----------------------------------------------------------------------
+    if mode == 'full':
+        phantom_files, phantom_sweep_info = generate_sweeps(
+            template_lines, initial_z, z_step,
+            "phantom", phantom_output, phantom_path, output_dir, results_dir,
+            projections_per_sweep, angle_between, total_projections,
+        )
 
-        while remaining > 0:
-            n_proj = min(projections_per_sweep, remaining)
-            sweep_name = f"{out_base}_sweep_{sweep:04d}"
-            in_filename = f"{label}_sweep_{sweep:04d}.in"
-            in_filepath = os.path.join(output_dir, in_filename)
+        # Run sweeps
+        blank_results = run_sweeps(blank_files, mcgpu)
+        phantom_results = run_sweeps(phantom_files, mcgpu)
+
+        log_path = os.path.join(output_dir, "generate_ct_sweeps.log")
+        with open(log_path, 'w') as f:
+            f.write(param_summary + "\n\n")
+            f.write("BLANK SWEEPS:\n")
+            for info, (fp, rc) in zip(blank_sweep_info, blank_results):
+                f.write(f"  {info['file']}  n_proj={info['n_proj']}  "
+                        f"source_z={info['source_z']:.4f}  "
+                        f"angle_start={info['angle_start']:.4f}  "
+                        f"z_step={info['z_step']:+.6f}  rc={rc}\n")
+            f.write("PHANTOM SWEEPS:\n")
+            for info, (fp, rc) in zip(phantom_sweep_info, phantom_results):
+                f.write(f"  {info['file']}  n_proj={info['n_proj']}  "
+                        f"source_z={info['source_z']:.4f}  "
+                        f"angle_start={info['angle_start']:.4f}  "
+                        f"z_step={info['z_step']:+.6f}  rc={rc}\n")
+        print(f"\nLog written to {log_path}")
+
+    # -----------------------------------------------------------------------
+    # SUBSET MODE
+    # -----------------------------------------------------------------------
+    elif mode == 'subset':
+        if phantom_nii is None:
+            raise ValueError("--phantom-nii is required in subset mode")
+
+        # Run blank sweeps
+        run_sweeps(blank_files, mcgpu)
+
+        # Glob blank headers produced by MC-GPU
+        pattern = os.path.join(results_dir, f"{blank_output}_sweep_*")
+        all_files = sorted(glob.glob(pattern))
+        header_files = [f for f in all_files if not f.endswith('.raw')]
+        print(f"\nFound {len(header_files)} blank headers in {results_dir}")
+
+        # Group by sweep, find contiguous block per sweep inside Z region
+        subsets, z_margin = select_sweep_subsets(
+            header_files, phantom_nii, template_file, z_step, zmin, zmax,
+        )
+
+        blank_subset_prefix   = f"{blank_output}_subset"
+        phantom_subset_prefix = f"{phantom_output}_subset"
+
+        # Per-sweep: copy blank files + simulate phantom as one contiguous run
+        for sub in subsets:
+            sweep_idx     = sub['sweep_idx']
+            i_start_orig  = sub['i_start_orig']
+            n_proj_subset = sub['n_proj_subset']
+            src_pos       = sub['src_pos']
+            direction     = sub['direction']
+            z_step_signed = sub['z_step_signed']
+
+            # Copy blank files, renaming to 1-based subset indices
+            print(f"\n  Sweep {sweep_idx:04d}: copying {n_proj_subset} blank files")
+            for j in range(n_proj_subset):
+                orig_idx = i_start_orig + j
+                src = os.path.join(results_dir,
+                                   f"{blank_output}_sweep_{sweep_idx:04d}_{orig_idx:04d}")
+                dst = os.path.join(results_dir,
+                                   f"{blank_subset_prefix}_sweep_{sweep_idx:04d}_{j+1:04d}")
+                shutil.copy2(src,          dst)
+                shutil.copy2(src + ".raw", dst + ".raw")
+
+            # Build phantom .in for this sweep subset and run
+            src_x, src_y, src_z = src_pos
+            dir_x, dir_y, dir_z = direction
+            alpha, beta, gamma  = compute_euler_angles(dir_x, dir_y, dir_z)
+
+            out_name = os.path.join(results_dir,
+                                    f"{phantom_subset_prefix}_sweep_{sweep_idx:04d}")
+            tmp_in   = os.path.join(output_dir, f"subset_tmp_{sweep_idx:04d}.in")
 
             lines = list(template_lines)
-            source_z = initial_z + cumulative_z
-            update_source_z(lines, source_z)
-            update_num_projections(lines, n_proj)
-            update_angular_rotation_to_first(lines, cumulative_angle)
-            update_translation_along_axis(lines, current_translation)
-            update_output_name(lines, sweep_name)
+            update_num_projections(lines, n_proj_subset)
+            update_source_position(lines, src_x, src_y, src_z)
+            update_source_direction(lines, dir_x, dir_y, dir_z)
+            update_euler_angles(lines, alpha, beta, gamma)
+            update_angular_rotation_to_first(lines, 0.0)
+            update_translation_along_axis(lines, z_step_signed)
             update_angle_between_projections(lines, angle_between)
-            update_phantom_file(lines, phantom)
+            update_output_name(lines, out_name)
+            update_phantom_file(lines, phantom_path)
 
-            with open(in_filepath, 'w') as f:
+            with open(tmp_in, 'w') as f:
                 f.writelines(lines)
 
-            print(f"{sweep:6d} | {n_proj:5d} | {cumulative_angle:10.4f}° | "
-                  f"{source_z:10.4f} cm | {current_translation:+10.4f} cm | "
-                  f"{in_filename}")
+            direction_label = 'up' if z_step_signed > 0 else 'down'
+            print(f"  Sweep {sweep_idx:04d} ({direction_label}): "
+                  f"{n_proj_subset} proj  "
+                  f"src=({src_x:.3f},{src_y:.3f},{src_z:.3f})  "
+                  f"z_step={z_step_signed:+.4f} cm")
 
-            sweep_files.append(in_filepath)
+            try:
+                subprocess.run(["mpirun", "-n", "1", mcgpu, tmp_in], check=True)
+            finally:
+                os.remove(tmp_in)
 
-            cumulative_z += (n_proj - 1) * current_translation
-            cumulative_angle += (n_proj - 1) * angle_between
-            current_translation *= -1
-            remaining -= n_proj
-            sweep += 1
+        # Write log
+        total_proj = sum(s['n_proj_subset'] for s in subsets)
+        log_path = os.path.join(output_dir, "generate_ct_sweeps_subset.log")
+        with open(log_path, 'w') as f:
+            f.write(param_summary + "\n\n")
+            f.write(f"zmin={zmin}  zmax={zmax}  z_margin={z_margin:.4f} cm\n")
+            f.write(f"Total blank headers: {len(header_files)}\n")
+            f.write(f"Sweeps simulated: {len(subsets)}  "
+                    f"Total projections: {total_proj}\n")
+            f.write(f"Blank subset prefix:   {blank_subset_prefix}\n")
+            f.write(f"Phantom subset prefix:  {phantom_subset_prefix}\n\n")
+            f.write("SWEEP SUBSETS:\n")
+            for sub in subsets:
+                pos, d = sub['src_pos'], sub['direction']
+                f.write(f"  sweep {sub['sweep_idx']:04d}  "
+                        f"i_start={sub['i_start_orig']:04d}  "
+                        f"n_proj={sub['n_proj_subset']}  "
+                        f"z_step={sub['z_step_signed']:+.6f}  "
+                        f"src=({pos[0]:.4f},{pos[1]:.4f},{pos[2]:.4f})  "
+                        f"dir=({d[0]:.4f},{d[1]:.4f},{d[2]:.4f})\n")
+        print(f"\nLog written to {log_path}")
 
-        scans[label] = sweep_files
+        print(f"\nTo build listmode data:")
+        print(f"  python Build_listmode.py \\")
+        print(f"      --in-root test \\")
+        print(f"      --results-dir {results_dir}/ \\")
+        print(f"      --results-root {phantom_subset_prefix} \\")
+        print(f"      --blank-results-root {blank_subset_prefix} \\")
+        print(f"      --signal-channel primary")
 
-    blank_files = scans["blank"]
-    phantom_files = scans["phantom"]
+    else:
+        raise ValueError(f"Unknown mode: {mode!r}. Use 'full' or 'subset'.")
 
-    sh_path = os.path.join(output_dir, "run_ct_scan.sh")
-    with open(sh_path, 'w') as f:
-        f.write("#!/bin/bash\n")
-        f.write("# Auto-generated MC-GPU zigzag CT scan runner\n")
-        f.write(f"# {len(blank_files)} blank + {len(phantom_files)} phantom sweeps, "
-                f"{total_projections} projections each\n")
-        f.write(f"# Angle between projections: {angle_between:.6f} deg (derived)\n")
-        f.write(f"# Z step: {z_step:.6f} cm\n\n")
-        f.write("# Blank scan first (for normalization)\n")
-        for sf in blank_files:
-            f.write(f"./MC-GPU_v1.5b.x {sf}\n")
-        f.write("\n# Phantom scan\n")
-        for sf in phantom_files:
-            f.write(f"./MC-GPU_v1.5b.x {sf}\n")
-    os.chmod(sh_path, 0o755)
 
-    print("-" * 80)
-    print(f"Generated {len(blank_files)} blank + {len(phantom_files)} phantom "
-          f"sweep files and {sh_path}")
-
-    return blank_files, phantom_files
-
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Generate MC-GPU input files for paired phantom + blank zigzag CT scans.")
-    parser.add_argument("template", help="Path to the base MC-GPU .in file")
-    parser.add_argument("num_sweeps", type=int,
+        description="Generate MC-GPU input files and run zigzag CT sweeps.")
+    parser.add_argument("template",    help="Base MC-GPU .in file")
+    parser.add_argument("num_sweeps",  type=int,
                         help="Number of vertical sweeps in a full 360-degree rotation")
-    parser.add_argument("total_z", type=float,
+    parser.add_argument("total_z",     type=float,
                         help="Total vertical distance per sweep [cm]")
-    parser.add_argument("z_step", type=float,
+    parser.add_argument("z_step",      type=float,
                         help="Vertical step between projections [cm]")
-    parser.add_argument("--phantom-path", required=True,
-                        help="Voxelized geometry file path for the phantom scan")
+    parser.add_argument("--phantom-path",   required=True,
+                        help="Voxelized geometry file for the phantom scan")
     parser.add_argument("--phantom-output", required=True,
                         help="Output image base name for the phantom scan")
-    parser.add_argument("--blank-path", required=True,
-                        help="Voxelized geometry file path for the blank (normalization) scan")
-    parser.add_argument("--blank-output", required=True,
+    parser.add_argument("--blank-path",     required=True,
+                        help="Voxelized geometry file for the blank scan")
+    parser.add_argument("--blank-output",   required=True,
                         help="Output image base name for the blank scan")
+    parser.add_argument("--mcgpu",          required=True,
+                        help="Path to MC-GPU executable (e.g. ./MC-GPU_v1.5b.x)")
+    parser.add_argument("--results-dir",    required=True,
+                        help="Directory where MC-GPU writes its output files")
+    parser.add_argument("--mode",           choices=["full", "subset"], default="full",
+                        help="Execution mode (default: full)")
+    parser.add_argument("--zmin",           type=float, default=-55.0,
+                        help="Min source Z for subset selection [cm] (default: -55)")
+    parser.add_argument("--zmax",           type=float, default=55.0,
+                        help="Max source Z for subset selection [cm] (default: +55)")
+    parser.add_argument("--phantom-nii",
+                        help="Phantom NIfTI file (required in subset mode)")
     parser.add_argument("-o", "--output-dir", default=None,
-                        help="Output directory (default: same as template)")
+                        help="Directory for generated .in files (default: same as template)")
     args = parser.parse_args()
 
-    main(args.template, args.num_sweeps, args.total_z, args.z_step,
-         args.phantom_path, args.phantom_output,
-         args.blank_path, args.blank_output,
-         args.output_dir)
+    main(
+        template_file  = args.template,
+        num_sweeps     = args.num_sweeps,
+        total_z        = args.total_z,
+        z_step         = args.z_step,
+        phantom_path   = args.phantom_path,
+        phantom_output = args.phantom_output,
+        blank_path     = args.blank_path,
+        blank_output   = args.blank_output,
+        mcgpu          = args.mcgpu,
+        results_dir    = args.results_dir,
+        mode           = args.mode,
+        zmin           = args.zmin,
+        zmax           = args.zmax,
+        phantom_nii    = args.phantom_nii,
+        output_dir     = args.output_dir,
+    )

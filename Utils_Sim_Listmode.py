@@ -3,8 +3,10 @@
 #------------------------------------------------------
 
 
-import numpy as np
+import os
 import re
+import subprocess
+import numpy as np
 
 
 # ---------------------------------------------------------------------------
@@ -272,3 +274,228 @@ def get_output_base_name(lines):
             if match:
                 return match.group(1)
     raise ValueError("Could not find OUTPUT IMAGE FILE NAME line")
+
+
+#------------------------------------------------------
+#--------------- NIfTI / geometry helpers -------------
+#------------------------------------------------------
+
+import nibabel as nib
+
+
+def read_nii(file_path):
+    """Load a NIfTI file and return (img, (zax, yax, xax)) with axes in mm."""
+    nii = nib.load(file_path)
+    img = nii.get_fdata()[:, :, :, 0].T
+    imgdimz, imgdimy, imgdimx = img.shape
+    voxdimx, voxdimy, voxdimz = np.abs(nii.affine).diagonal()[:3]
+    zax = np.arange(-imgdimz*voxdimz/2, imgdimz*voxdimz/2 + voxdimz, voxdimz)
+    yax = np.arange(-imgdimy*voxdimy/2, imgdimy*voxdimy/2 + voxdimy, voxdimy)
+    xax = np.arange(-imgdimx*voxdimx/2, imgdimx*voxdimx/2 + voxdimx, voxdimx)
+    return img, (zax, yax, xax)
+
+
+def subsample_slicewise(vectors, xax, yax, zmin=-100, zmax=100,
+                         D_size=(1000, 50), D_z=1, SOD=650, ODD=450,
+                         return_mask=False):
+    """
+    Filter rows of *vectors* whose Z coordinate (column 2) falls within
+    [zmin, zmax] extended by the cone-beam margin needed to cover the detector.
+
+    Parameters
+    ----------
+    vectors   : (N, ≥3) array — column 2 must be source Z [cm]
+    xax, yax  : phantom spatial axes [cm]
+    D_size    : (det_cols, det_rows)
+    D_z       : detector pixel height [cm]
+    SOD, ODD  : source-to-object and object-to-detector distances [cm]
+    return_mask : if True, return (filtered_vectors, bool_mask)
+
+    Returns
+    -------
+    filtered_vectors [, bool_mask]
+    """
+    D_Z = D_size[1]
+    phi = np.arctan2(D_Z * D_z / 2, SOD + ODD)
+    xmax_ext = np.max([np.abs(xax[0]), np.abs(xax[-1])])
+    ymax_ext = np.max([np.abs(yax[0]), np.abs(yax[-1])])
+    maxmax = np.max([xmax_ext, ymax_ext])
+    z_margin = (SOD + maxmax) * np.tan(phi)
+    zmin_new = zmin - z_margin
+    zmax_new = zmax + z_margin
+    bool_mask = (vectors[:, 2] >= zmin_new) & (vectors[:, 2] <= zmax_new)
+    if return_mask:
+        return vectors[bool_mask], bool_mask, z_margin
+    return vectors[bool_mask]
+
+
+#------------------------------------------------------
+#-------------- CT sweep execution helpers ------------
+#------------------------------------------------------
+
+def generate_sweeps(template_lines, initial_z, z_step, label, out_base,
+                    phantom_path, output_dir, results_dir, projections_per_sweep,
+                    angle_between, total_projections):
+    """Generate .in files for one scan type (blank or phantom).
+
+    Returns (sweep_files, sweep_info) where sweep_info is a list of dicts with
+    keys: file, n_proj, source_z, angle_start, z_step.
+    """
+    print(f"\n--- {label.upper()} SCAN ---")
+    print(f"\n{'Sweep':>6} | {'Proj':>5} | {'Start Angle':>12} | "
+          f"{'Source Z':>12} | {'Z step':>12} | File")
+    print("-" * 80)
+
+    cumulative_angle = 0.0
+    cumulative_z = 0.0
+    current_translation = z_step
+    remaining = total_projections
+    sweep = 0
+    sweep_files = []
+    sweep_info = []
+
+    while remaining > 0:
+        n_proj = min(projections_per_sweep, remaining)
+        sweep_name = os.path.join(results_dir, f"{out_base}_sweep_{sweep:04d}")
+        in_filename = f"{label}_sweep_{sweep:04d}.in"
+        in_filepath = os.path.join(output_dir, in_filename)
+
+        lines = list(template_lines)
+        source_z = initial_z + cumulative_z
+        update_source_z(lines, source_z)
+        update_num_projections(lines, n_proj)
+        update_angular_rotation_to_first(lines, cumulative_angle)
+        update_translation_along_axis(lines, current_translation)
+        update_output_name(lines, sweep_name)
+        update_angle_between_projections(lines, angle_between)
+        update_phantom_file(lines, phantom_path)
+
+        with open(in_filepath, 'w') as f:
+            f.writelines(lines)
+
+        print(f"{sweep:6d} | {n_proj:5d} | {cumulative_angle:10.4f}° | "
+              f"{source_z:10.4f} cm | {current_translation:+10.4f} cm | "
+              f"{in_filename}")
+
+        sweep_files.append(in_filepath)
+        sweep_info.append({
+            "file": in_filename, "n_proj": n_proj,
+            "source_z": source_z, "angle_start": cumulative_angle,
+            "z_step": current_translation,
+        })
+
+        cumulative_z += (n_proj - 1) * current_translation
+        cumulative_angle += (n_proj - 1) * angle_between
+        current_translation *= -1
+        remaining -= n_proj
+        sweep += 1
+
+    return sweep_files, sweep_info
+
+
+def run_sweeps(sweep_files, mcgpu):
+    """Run each .in file via MC-GPU. Returns list of (filepath, returncode)."""
+    results = []
+    for in_file in sweep_files:
+        print(f"  Running: mpirun -n 1 {mcgpu} {in_file}")
+        proc = subprocess.run(["mpirun", "-n", "1", mcgpu, in_file])
+        results.append((in_file, proc.returncode))
+        if proc.returncode != 0:
+            print(f"  WARNING: MC-GPU returned {proc.returncode} for {in_file}")
+    return results
+
+
+def select_sweep_subsets(header_files, phantom_nii, template_file, z_step, zmin, zmax):
+    """Group blank headers by sweep and find the contiguous Z-region block per sweep.
+
+    Filename pattern expected: {prefix}_sweep_{XXXX}_{YYYY}
+      XXXX = sweep index (even → going up, odd → going down)
+      YYYY = 1-based projection index within the sweep
+
+    Returns
+    -------
+    subsets : list of dicts with keys
+        sweep_idx, i_start_orig (1-based), n_proj_subset,
+        src_pos (3,), direction (3,), z_step_signed
+    z_margin : float [cm]
+    """
+    all_entries = []   # (sweep_idx, proj_idx, source_pos, direction)
+    nx, nz = None, None
+
+    for hf in header_files:
+        m = re.search(r'_sweep_(\d+)_(\d+)$', os.path.basename(hf))
+        if not m:
+            continue
+        sweep_idx = int(m.group(1))
+        proj_idx  = int(m.group(2))   # 1-based
+
+        info = parse_header(hf)
+        if nx is None:
+            nx, nz = info['nx'], info['nz']
+        all_entries.append((sweep_idx, proj_idx, info['source_pos'], info['direction']))
+
+    all_positions = np.array([e[2] for e in all_entries])   # (N, 3)
+
+    params = parse_in_file(template_file)
+    D_z    = params['height_z'] / nz
+    SOD    = params['sod']
+    ODD    = params['sdd'] - SOD
+    D_size = (nx, nz)
+
+    _, (_, yax, xax) = read_nii(phantom_nii)
+    xax, yax = xax / 10, yax / 10   # mm → cm
+
+    _, bool_mask, z_margin = subsample_slicewise(
+        all_positions, xax, yax,
+        zmin=zmin, zmax=zmax,
+        D_size=D_size, D_z=D_z,
+        SOD=SOD, ODD=ODD,
+        return_mask=True,
+    )
+
+    print(f"  Z margin: {z_margin:.4f} cm  →  effective range "
+          f"[{zmin - z_margin:.4f}, {zmax + z_margin:.4f}] cm")
+
+    # Group selected entries by sweep
+    sweep_data = {}
+    for (sweep_idx, proj_idx, src_pos, direction), keep in zip(all_entries, bool_mask):
+        if not keep:
+            continue
+        sweep_data.setdefault(sweep_idx, []).append((proj_idx, src_pos, direction))
+
+    subsets = []
+    total_proj = 0
+
+    for sweep_idx in sorted(sweep_data):
+        z_step_signed = z_step if sweep_idx % 2 == 0 else -z_step
+        going_up = z_step_signed > 0
+
+        # Sort by source Z in travel direction so index 0 is first to enter region:
+        #   going up   → ascending Z  → first = min Z
+        #   going down → descending Z → first = max Z
+        projs = sorted(sweep_data[sweep_idx],
+                       key=lambda x: x[1][2],
+                       reverse=not going_up)
+
+        i_start_orig  = projs[0][0]   # 1-based original proj index
+        n_proj_subset = len(projs)
+        src_pos       = projs[0][1]
+        direction     = projs[0][2]
+
+        subsets.append({
+            'sweep_idx':     sweep_idx,
+            'i_start_orig':  i_start_orig,
+            'n_proj_subset': n_proj_subset,
+            'src_pos':       src_pos,
+            'direction':     direction,
+            'z_step_signed': z_step_signed,
+        })
+        total_proj += n_proj_subset
+
+        direction_label = 'up' if z_step_signed > 0 else 'down'
+        print(f"  Sweep {sweep_idx:04d} ({direction_label}): "
+              f"proj {i_start_orig:04d}–{i_start_orig + n_proj_subset - 1:04d}  "
+              f"({n_proj_subset} projections)")
+
+    print(f"  Total: {len(subsets)} sweeps, {total_proj} projections")
+    return subsets, z_margin
