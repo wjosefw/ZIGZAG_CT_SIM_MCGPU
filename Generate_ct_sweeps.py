@@ -234,14 +234,6 @@ def main(template_file, num_sweeps, total_z, z_step,
                         f"dir=({d[0]:.4f},{d[1]:.4f},{d[2]:.4f})\n")
         print(f"\nLog written to {log_path}")
 
-        print(f"\nTo build listmode data:")
-        print(f"  python Build_listmode.py \\")
-        print(f"      --in-root test \\")
-        print(f"      --results-dir {results_dir}/ \\")
-        print(f"      --results-root {phantom_subset_prefix} \\")
-        print(f"      --blank-results-root {blank_subset_prefix} \\")
-        print(f"      --signal-channel primary")
-
     else:
         raise ValueError(f"Unknown mode: {mode!r}. Use 'full' or 'subset'.")
 

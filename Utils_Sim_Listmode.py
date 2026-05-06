@@ -341,11 +341,6 @@ def generate_sweeps(template_lines, initial_z, z_step, label, out_base,
     Returns (sweep_files, sweep_info) where sweep_info is a list of dicts with
     keys: file, n_proj, source_z, angle_start, z_step.
     """
-    print(f"\n--- {label.upper()} SCAN ---")
-    print(f"\n{'Sweep':>6} | {'Proj':>5} | {'Start Angle':>12} | "
-          f"{'Source Z':>12} | {'Z step':>12} | File")
-    print("-" * 80)
-
     cumulative_angle = 0.0
     cumulative_z = 0.0
     current_translation = z_step
@@ -373,10 +368,6 @@ def generate_sweeps(template_lines, initial_z, z_step, label, out_base,
         with open(in_filepath, 'w') as f:
             f.writelines(lines)
 
-        print(f"{sweep:6d} | {n_proj:5d} | {cumulative_angle:10.4f}° | "
-              f"{source_z:10.4f} cm | {current_translation:+10.4f} cm | "
-              f"{in_filename}")
-
         sweep_files.append(in_filepath)
         sweep_info.append({
             "file": in_filename, "n_proj": n_proj,
@@ -397,7 +388,6 @@ def run_sweeps(sweep_files, mcgpu):
     """Run each .in file via MC-GPU. Returns list of (filepath, returncode)."""
     results = []
     for in_file in sweep_files:
-        print(f"  Running: mpirun -n 1 {mcgpu} {in_file}")
         proc = subprocess.run(["mpirun", "-n", "1", mcgpu, in_file])
         results.append((in_file, proc.returncode))
         if proc.returncode != 0:
