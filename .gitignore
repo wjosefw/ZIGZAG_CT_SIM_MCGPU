@@ -32,3 +32,8 @@ material_list_bern.txt
 view_raw.ipynb
 MC-GPU_v1.5b.x
 MC-GPU_create_material_data.x
+zigzag3d.py/
+parcel_s1_Dcropped_14012022_1_ct_Dcropped_14012022_1_ct_blank.bin
+parcel_s1_Dcropped_14012022_1_ct_Dcropped_14012022_1_ct_HU.bin
+parcel_s1_Dcropped_14012022_1_ct_Dcropped_14012022_1_ct_voxelId.bin
+parcel_s1_Dcropped_14012022_1_ct_Dcropped_14012022_1_ct.nii
