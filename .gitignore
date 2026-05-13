@@ -17,6 +17,8 @@ Thumbs.db
 *.swp
 *.swo
 *~
+*.raw
+*.npy
 .vscode/
 .idea/
 
