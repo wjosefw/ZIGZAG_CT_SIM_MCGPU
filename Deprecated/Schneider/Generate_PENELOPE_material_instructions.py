@@ -6,7 +6,7 @@ dictionaries, and writes .in files that answer the interactive prompts automatic
 
 import argparse
 
-from utils import load_schneider_materials, write_material_input
+from Deprecated.Schneider.utils import load_schneider_materials, write_material_input
 
 def main(output_dir):
     schneider = load_schneider_materials()

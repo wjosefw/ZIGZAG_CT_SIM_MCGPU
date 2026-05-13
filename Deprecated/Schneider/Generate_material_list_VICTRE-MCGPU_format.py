@@ -5,7 +5,7 @@ import argparse
 import numpy as np
 
 from pathlib import Path
-from utils import hu_to_density_schneider, load_schneider_materials
+from Deprecated.Schneider.utils import hu_to_density_schneider, load_schneider_materials
 
 
 def main(material_dir="", n_partitions=3):

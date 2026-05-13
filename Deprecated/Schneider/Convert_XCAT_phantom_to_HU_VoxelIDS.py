@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from utils import load_schneider_materials, parse_xcat_log
+from Deprecated.Schneider.utils import load_schneider_materials, parse_xcat_log
 
 
 def main(input_path, log_path, output_path=None, output_voxel_path=None, output_blank_path=None, n_partitions=3):
