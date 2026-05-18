@@ -7,6 +7,8 @@ import os
 import re
 import subprocess
 import numpy as np
+import Sim_config
+from mcgpu_writer import write_in_file
 
 
 # ---------------------------------------------------------------------------
@@ -43,58 +45,6 @@ def parse_header(filepath):
     }
 
 
-def parse_in_file(filepath):
-    """Parse an MC-GPU .in file for detector geometry parameters."""
-    with open(filepath, "r") as f:
-        lines = f.readlines()
-
-    def first_token(line):
-        return line.split("#")[0].strip().split()
-
-    # Line 41: IMAGE SIZE (width, height) Dx Dz [cm]
-    tokens = first_token(lines[40])
-    width_x, height_z = float(tokens[0]), float(tokens[1])
-
-    # Line 42: SOURCE-TO-DETECTOR DISTANCE
-    tokens = first_token(lines[41])
-    sdd = float(tokens[0])
-
-    # Line 43: IMAGE OFFSET
-    tokens = first_token(lines[42])
-    offset_x, offset_z = float(tokens[0]), float(tokens[1])
-
-    # Line 56: SOURCE-TO-ROTATION AXIS DISTANCE (= SOD, valid when rotation axis is at origin)
-    tokens = first_token(lines[55])
-    sod = float(tokens[0])
-
-    # Line 59: AXIS OF ROTATION
-    tokens = first_token(lines[58])
-    rot_axis = np.array([float(tokens[0]), float(tokens[1]), float(tokens[2])])
-    rot_axis = rot_axis / np.linalg.norm(rot_axis)
-
-    # Lines 74-76: PHANTOM GEOMETRY (offset, nvoxels, voxel size) [cm]
-    tokens = first_token(lines[73])
-    phantom_ox, phantom_oy = float(tokens[0]), float(tokens[1])
-    tokens = first_token(lines[74])
-    phantom_nx, phantom_ny = int(tokens[0]), int(tokens[1])
-    tokens = first_token(lines[75])
-    phantom_dx, phantom_dy = float(tokens[0]), float(tokens[1])
-
-    return {
-        "sdd": sdd,
-        "sod": sod,
-        "width_x": width_x,
-        "height_z": height_z,
-        "offset_x": offset_x,
-        "offset_z": offset_z,
-        "rot_axis": rot_axis,
-        "phantom_ox": phantom_ox,
-        "phantom_oy": phantom_oy,
-        "phantom_nx": phantom_nx,
-        "phantom_ny": phantom_ny,
-        "phantom_dx": phantom_dx,
-        "phantom_dy": phantom_dy,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -170,124 +120,14 @@ def read_raw_both_channels(filepath, nx, nz):
     return data.transpose(2, 1, 0)
 
 
-#------------------------------------------------------
-#-------------- Simulation helpers --------------------
-#------------------------------------------------------
-
-import re
-
-
-def parse_template(filepath):
-    """Read the template .in file and return its lines."""
-    with open(filepath) as f:
-        return f.readlines()
-
-
-def find_and_replace_value(lines, comment_keyword, new_value_str):
-    """Find a line by its trailing comment keyword and replace the leading value."""
-    for i, line in enumerate(lines):
-        if comment_keyword in line and not line.strip().startswith('#'):
-            match = re.match(r'^(\s*)(.*?)(#.*)', line)
-            if match:
-                indent, _old_val, comment = match.groups()
-                lines[i] = f"{indent}{new_value_str}   {comment}\n"
-            return lines
-    raise ValueError(f"Could not find line with comment keyword: {comment_keyword}")
-
-
-def update_source_z(lines, new_z):
-    """Update the Z component of SOURCE POSITION."""
-    for i, line in enumerate(lines):
-        if 'SOURCE POSITION' in line and not line.strip().startswith('#'):
-            match = re.match(r'^(\s*)([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)(.*)', line)
-            if match:
-                indent, x, y, _z, rest = match.groups()
-                lines[i] = f"{indent}{x}  {y}   {new_z:.6f}{rest}\n"
-            return lines
-    raise ValueError("Could not find SOURCE POSITION line")
-
-
 def compute_euler_angles(dir_x, dir_y, dir_z):
-    """
-    RzRyRz Euler angles that rotate the MC-GPU default direction (0,1,0) to
-    (dir_x, dir_y, dir_z). Valid when dir_z ≈ 0 (source-detector in XY plane).
-    Returns (alpha, beta, gamma) in degrees.
+    """RzRyRz Euler angles rotating MC-GPU default direction (0,1,0) to (dir_x, dir_y, dir_z).
+    Valid when dir_z ≈ 0. Returns (alpha, beta, gamma) in degrees.
     """
     alpha = np.degrees(np.arctan2(dir_x, -dir_y))
     beta  = 0.0
     gamma = 180.0
     return alpha, beta, gamma
-
-
-def update_euler_angles(lines, alpha, beta, gamma):
-    """Update the RzRyRz Euler angles for the source beam orientation."""
-    return find_and_replace_value(
-        lines, 'EULER ANGLES', f"{alpha:.6f}   {beta:.6f}   {gamma:.6f}"
-    )
-
-
-def update_source_position(lines, x, y, z):
-    """Update X, Y, Z of SOURCE POSITION."""
-    return find_and_replace_value(lines, 'SOURCE POSITION', f"{x:.8f}  {y:.8f}  {z:.8f}")
-
-
-def update_source_direction(lines, u, v, w):
-    """Update direction cosines U V W."""
-    return find_and_replace_value(lines, 'SOURCE DIRECTION COSINES', f"{u:.8f}  {v:.8f}  {w:.8f}")
-
-
-def update_num_projections(lines, n_proj):
-    return find_and_replace_value(lines, 'NUMBER OF PROJECTIONS', str(n_proj))
-
-
-def update_angular_rotation_to_first(lines, angle_deg):
-    return find_and_replace_value(lines, 'ANGULAR ROTATION TO FIRST PROJECTION', f"{angle_deg:.6f}")
-
-
-def update_translation_along_axis(lines, translation_cm):
-    return find_and_replace_value(lines, 'TRANSLATION ALONG ROTATION AXIS', f"{translation_cm:.6f}")
-
-
-def update_output_name(lines, name):
-    return find_and_replace_value(lines, 'OUTPUT IMAGE FILE NAME', name)
-
-
-def update_angle_between_projections(lines, angle_deg):
-    return find_and_replace_value(lines, 'ANGLE BETWEEN PROJECTIONS', f"{angle_deg:.6f}")
-
-
-def update_phantom_file(lines, phantom_path):
-    """Replace the voxelized geometry file path (first non-comment line after
-    the VOXELIZED GEOMETRY FILE section header)."""
-    in_section = False
-    for i, line in enumerate(lines):
-        if 'SECTION VOXELIZED GEOMETRY FILE' in line:
-            in_section = True
-            continue
-        if in_section and line.strip() and not line.strip().startswith('#'):
-            lines[i] = f"{phantom_path}\n"
-            return lines
-    raise ValueError("Could not find voxelized geometry file line")
-
-
-def get_initial_z(lines):
-    """Extract the initial Z coordinate from SOURCE POSITION."""
-    for line in lines:
-        if 'SOURCE POSITION' in line and not line.strip().startswith('#'):
-            match = re.match(r'^\s*([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)', line)
-            if match:
-                return float(match.group(3))
-    raise ValueError("Could not find SOURCE POSITION line")
-
-
-def get_output_base_name(lines):
-    """Extract the base output name from the template."""
-    for line in lines:
-        if 'OUTPUT IMAGE FILE NAME' in line and not line.strip().startswith('#'):
-            match = re.match(r'^\s*(\S+)', line)
-            if match:
-                return match.group(1)
-    raise ValueError("Could not find OUTPUT IMAGE FILE NAME line")
 
 
 #------------------------------------------------------
@@ -347,7 +187,7 @@ def subsample_slicewise(vectors, xax, yax, zmin=-100, zmax=100,
 #-------------- CT sweep execution helpers ------------
 #------------------------------------------------------
 
-def generate_sweeps(template_lines, initial_z, z_step, label, out_base,
+def generate_sweeps(z_step, label, out_base,
                     phantom_path, output_dir, results_dir, projections_per_sweep,
                     angle_between, total_projections):
     """Generate .in files for one scan type (blank or phantom).
@@ -369,18 +209,16 @@ def generate_sweeps(template_lines, initial_z, z_step, label, out_base,
         in_filename = f"{label}_sweep_{sweep:04d}.in"
         in_filepath = os.path.join(output_dir, in_filename)
 
-        lines = list(template_lines)
-        source_z = initial_z + cumulative_z
-        update_source_z(lines, source_z)
-        update_num_projections(lines, n_proj)
-        update_angular_rotation_to_first(lines, cumulative_angle)
-        update_translation_along_axis(lines, current_translation)
-        update_output_name(lines, sweep_name)
-        update_angle_between_projections(lines, angle_between)
-        update_phantom_file(lines, phantom_path)
-
-        with open(in_filepath, 'w') as f:
-            f.writelines(lines)
+        source_z = Sim_config.SOURCE_Z + cumulative_z
+        write_in_file(in_filepath, {
+            "source_z":                     source_z,
+            "n_projections":                n_proj,
+            "rotation_to_first_projection": cumulative_angle,
+            "translation_along_axis":       current_translation,
+            "output_name":                  sweep_name,
+            "angle_between_projections":    angle_between,
+            "phantom_file":                 phantom_path,
+        })
 
         sweep_files.append(in_filepath)
         sweep_info.append({
@@ -409,7 +247,7 @@ def run_sweeps(sweep_files, mcgpu):
     return results
 
 
-def select_sweep_subsets(header_files, template_file, z_step, zmin, zmax):
+def select_sweep_subsets(header_files, z_step, zmin, zmax):
     """Group blank headers by sweep and find the contiguous Z-region block per sweep.
 
     Filename pattern expected: {prefix}_sweep_{XXXX}_{YYYY}
@@ -440,14 +278,13 @@ def select_sweep_subsets(header_files, template_file, z_step, zmin, zmax):
 
     all_positions = np.array([e[2] for e in all_entries])   # (N, 3)
 
-    params = parse_in_file(template_file)
-    D_z    = params['height_z'] / nz
-    SOD    = params['sod']
-    ODD    = params['sdd'] - SOD
+    D_z    = Sim_config.DETECTOR_HEIGHT_Z / nz
+    SOD    = Sim_config.SOD
+    ODD    = Sim_config.SDD - SOD
     D_size = (nx, nz)
 
-    xax = np.array([params['phantom_ox'], params['phantom_ox'] + params['phantom_nx'] * params['phantom_dx']])
-    yax = np.array([params['phantom_oy'], params['phantom_oy'] + params['phantom_ny'] * params['phantom_dy']])
+    xax = np.array([Sim_config.PHANTOM_OFFSET_X, Sim_config.PHANTOM_OFFSET_X + Sim_config.PHANTOM_NX * Sim_config.VOXEL_SIZE_X])
+    yax = np.array([Sim_config.PHANTOM_OFFSET_Y, Sim_config.PHANTOM_OFFSET_Y + Sim_config.PHANTOM_NY * Sim_config.VOXEL_SIZE_Y])
 
     _, bool_mask, z_margin = subsample_slicewise(
         all_positions, xax, yax,

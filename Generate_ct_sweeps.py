@@ -20,18 +20,9 @@ import shutil
 import argparse
 import subprocess
 
+import Sim_config
+from mcgpu_writer import write_in_file
 from Utils_Sim_Listmode import (
-    parse_template,
-    get_initial_z,
-    update_num_projections,
-    update_angular_rotation_to_first,
-    update_translation_along_axis,
-    update_output_name,
-    update_angle_between_projections,
-    update_phantom_file,
-    update_source_position,
-    update_source_direction,
-    update_euler_angles,
     compute_euler_angles,
     generate_sweeps,
     run_sweeps,
@@ -43,19 +34,16 @@ from Utils_Sim_Listmode import (
 # Main
 # ---------------------------------------------------------------------------
 
-def main(template_file, num_sweeps, total_z, z_step,
+def main(num_sweeps, total_z, z_step,
          phantom_path, phantom_output, blank_path, blank_output,
          mcgpu, results_dir, mode='full',
          zmin=-55.0, zmax=55.0,
          output_dir=None):
 
     if output_dir is None:
-        output_dir = os.path.dirname(os.path.abspath(template_file))
+        output_dir = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(results_dir, exist_ok=True)
-
-    template_lines = parse_template(template_file)
-    initial_z = get_initial_z(template_lines)
 
     n_steps = round(total_z / z_step)
     projections_per_sweep = n_steps + 1
@@ -67,9 +55,9 @@ def main(template_file, num_sweeps, total_z, z_step,
         "=" * 60,
         "  ZIGZAG CT SCAN — PARAMETERS",
         "=" * 60,
-        f"  Template file:              {template_file}",
+        f"  Config:                     sim_config.py",
         f"  Mode:                       {mode}",
-        f"  Initial source Z:           {initial_z:.4f} cm",
+        f"  Initial source Z:           {Sim_config.SOURCE_Z:.4f} cm",
         f"  Phantom geometry:           {phantom_path}",
         f"  Phantom output base:        {phantom_output}",
         f"  Blank geometry:             {blank_path}",
@@ -98,7 +86,7 @@ def main(template_file, num_sweeps, total_z, z_step,
 
     # Generate blank sweep files (both modes need them)
     blank_files, blank_sweep_info = generate_sweeps(
-        template_lines, initial_z, z_step,
+        z_step,
         "blank", blank_output, blank_path, output_dir, results_dir,
         projections_per_sweep, angle_between, total_projections,
     )
@@ -108,7 +96,7 @@ def main(template_file, num_sweeps, total_z, z_step,
     # -----------------------------------------------------------------------
     if mode == 'full':
         phantom_files, phantom_sweep_info = generate_sweeps(
-            template_lines, initial_z, z_step,
+            z_step,
             "phantom", phantom_output, phantom_path, output_dir, results_dir,
             projections_per_sweep, angle_between, total_projections,
         )
@@ -149,7 +137,7 @@ def main(template_file, num_sweeps, total_z, z_step,
 
         # Group by sweep, find contiguous block per sweep inside Z region
         subsets, z_margin = select_sweep_subsets(
-            header_files, template_file, z_step, zmin, zmax,
+            header_files, z_step, zmin, zmax,
         )
 
         blank_subset_prefix   = f"{blank_output}_subset"
@@ -184,19 +172,23 @@ def main(template_file, num_sweeps, total_z, z_step,
                                     f"{phantom_subset_prefix}_sweep_{sweep_idx:04d}")
             tmp_in   = os.path.join(output_dir, f"subset_tmp_{sweep_idx:04d}.in")
 
-            lines = list(template_lines)
-            update_num_projections(lines, n_proj_subset)
-            update_source_position(lines, src_x, src_y, src_z)
-            update_source_direction(lines, dir_x, dir_y, dir_z)
-            update_euler_angles(lines, alpha, beta, gamma)
-            update_angular_rotation_to_first(lines, 0.0)
-            update_translation_along_axis(lines, z_step_signed)
-            update_angle_between_projections(lines, angle_between)
-            update_output_name(lines, out_name)
-            update_phantom_file(lines, phantom_path)
-
-            with open(tmp_in, 'w') as f:
-                f.writelines(lines)
+            write_in_file(tmp_in, {
+                "n_projections":                n_proj_subset,
+                "source_x":                     src_x,
+                "source_y":                     src_y,
+                "source_z":                     src_z,
+                "source_dir_u":                 dir_x,
+                "source_dir_v":                 dir_y,
+                "source_dir_w":                 dir_z,
+                "euler_alpha":                  alpha,
+                "euler_beta":                   beta,
+                "euler_gamma":                  gamma,
+                "rotation_to_first_projection": 0.0,
+                "translation_along_axis":       z_step_signed,
+                "angle_between_projections":    angle_between,
+                "output_name":                  out_name,
+                "phantom_file":                 phantom_path,
+            })
 
             direction_label = 'up' if z_step_signed > 0 else 'down'
             print(f"  Sweep {sweep_idx:04d} ({direction_label}): "
@@ -242,7 +234,6 @@ def main(template_file, num_sweeps, total_z, z_step,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Generate MC-GPU input files and run zigzag CT sweeps.")
-    parser.add_argument("template",    help="Base MC-GPU .in file")
     parser.add_argument("num_sweeps",  type=int,
                         help="Number of vertical sweeps in a full 360-degree rotation")
     parser.add_argument("total_z",     type=float,
@@ -272,7 +263,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(
-        template_file  = args.template,
         num_sweeps     = args.num_sweeps,
         total_z        = args.total_z,
         z_step         = args.z_step,

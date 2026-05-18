@@ -6,7 +6,7 @@ For each detector pixel in each projection and sweep, outputs one row:
     source_x, source_y, source_z, det_x, det_y, det_z, pixel_value
 
 Source positions and directions are parsed directly from MC-GPU output headers
-(Option A), so they match exactly what the simulation used.
+so they match exactly what the simulation used.
 
 Detector pixel world positions are computed from:
     det_center = source + direction * SDD
@@ -25,9 +25,9 @@ import glob
 import os
 import argparse
 
+import Sim_config
 from Utils_Sim_Listmode import (
     parse_header,
-    parse_in_file,
     compute_detector_pixels,
     compute_detector_center,
     read_raw_both_channels,
@@ -38,190 +38,156 @@ from Utils_Sim_Listmode import (
 # Main
 # ---------------------------------------------------------------------------
 
-def main(in_root, results_dir, results_root, blank_results_root, signal_channel):
+def main(results_dir, results_root, blank_results_root, signal_channel):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     results_dir = os.path.join(base_dir, results_dir)
 
-    # Discover sweeps: {in_root}_xxxx.in, or fall back to {in_root}.in
-    sweep_in_files = sorted(
-        glob.glob(os.path.join(base_dir, f"{in_root}_*.in"))
-    )
+    # Discover all projection headers directly from results directory
+    pattern = os.path.join(results_dir, f"{results_root}_*")
+    header_files = sorted(f for f in glob.glob(pattern) if not f.endswith(".raw"))
 
-    single_mode = False
-    if not sweep_in_files:
-        single_file = os.path.join(base_dir, f"{in_root}.in")
-        if os.path.exists(single_file):
-            sweep_in_files = [single_file]
-            single_mode = True
-            print(f"Found single input file: {in_root}.in")
-        else:
-            raise FileNotFoundError(
-                f"No {in_root}_*.in or {in_root}.in files found in {base_dir}"
-            )
-    else:
-        print(f"Found {len(sweep_in_files)} sweep input files")
+    if not header_files:
+        raise FileNotFoundError(
+            f"No result files found matching {results_root}_* in {results_dir}"
+        )
+    print(f"Found {len(header_files)} projection headers")
+
+    rot_axis = np.array([Sim_config.ROT_AXIS_X, Sim_config.ROT_AXIS_Y, Sim_config.ROT_AXIS_Z])
 
     all_rows = []
     projection_rows = []
     projection_images = []   # each entry: (nx, nz, 3): [total, primary, blank]
     projection_counter = 0
 
-    for sweep_file in sweep_in_files:
-        sweep_name = os.path.splitext(os.path.basename(sweep_file))[0]
+    for header_file in header_files:
+        info = parse_header(header_file)
+        raw_file = header_file + ".raw"
 
-        if single_mode:
-            sweep_tag = ""
-        else:
-            sweep_id = sweep_name.replace(f"{in_root}_", "")
-            sweep_tag = f"_{in_root}_{sweep_id}"
-
-        print(f"\nProcessing {sweep_name}...")
-
-        params = parse_in_file(sweep_file)
-
-        # Find header files for this sweep (exclude .raw)
-        pattern = os.path.join(results_dir, f"{results_root}{sweep_tag}_*")
-        header_files = sorted(
-            f for f in glob.glob(pattern) if not f.endswith(".raw")
-        )
-
-        if not header_files:
-            print(f"  WARNING: no result files found for {sweep_name}, skipping")
+        if not os.path.exists(raw_file):
+            print(f"  WARNING: {raw_file} not found, skipping")
             continue
 
-        for header_file in header_files:
-            info = parse_header(header_file)
-            raw_file = header_file + ".raw"
+        nx, nz = info["nx"], info["nz"]
 
-            if not os.path.exists(raw_file):
-                print(f"  WARNING: {raw_file} not found, skipping")
-                continue
+        det_center = compute_detector_center(
+            info["source_pos"], info["direction"], Sim_config.SDD
+        )
 
-            nx, nz = info["nx"], info["nz"]
+        print(
+            f"  Projection angle={info['angle_deg']:.1f}° "
+            f"source=({info['source_pos'][0]:.1f}, "
+            f"{info['source_pos'][1]:.1f}, "
+            f"{info['source_pos'][2]:.1f})"
+        )
 
-            det_center = compute_detector_center(
-                info["source_pos"], info["direction"], params["sdd"]
+        # Detector pixel positions -- shape (nz, nx, 3)
+        det_pos = compute_detector_pixels(
+            info["source_pos"],
+            info["direction"],
+            Sim_config.SDD,
+            Sim_config.DETECTOR_WIDTH_X,
+            Sim_config.DETECTOR_HEIGHT_Z,
+            nx, nz,
+            Sim_config.IMAGE_OFFSET_X,
+            Sim_config.IMAGE_OFFSET_Z,
+            rot_axis,
+        )
+
+        # Find matching blank projection by stripping results_root prefix
+        proj_suffix = os.path.basename(header_file)[len(results_root):]
+        blank_header = os.path.join(results_dir, f"{blank_results_root}{proj_suffix}")
+        blank_raw = blank_header + ".raw"
+        if not os.path.exists(blank_raw):
+            raise FileNotFoundError(
+                f"Blank raw file not found: {blank_raw}"
             )
 
-            print(
-                f"  Projection angle={info['angle_deg']:.1f}° "
-                f"source=({info['source_pos'][0]:.1f}, "
-                f"{info['source_pos'][1]:.1f}, "
-                f"{info['source_pos'][2]:.1f})"
+        # Read both channels for phantom and blank -- shape (nx, nz, 2)
+        phantom_both = read_raw_both_channels(raw_file, nx, nz)
+        blank_both = read_raw_both_channels(blank_raw, nx, nz)
+
+        # Normalize both channels: ln(blank / phantom), clipped to >= 0
+        eps = 0.5
+        log_both = np.log(np.maximum(blank_both, eps) / np.maximum(phantom_both, eps))
+        log_both = np.clip(log_both, 0, None)   # shape (nx, nz, 2)
+
+        # Dead pixels: both blank and phantom below half-photon floor -- exclude from listmode
+        dead = (blank_both < eps) & (phantom_both < eps)   # (nx, nz, 2)
+
+        # Select the channel used for listmode values.
+        # log_both is (nx, nz, 2); det_pos is (nz, nx, 3) -- transpose needed.
+        channel_idx = 0 if signal_channel == "total" else 1
+        values = log_both[:, :, channel_idx].T   # (nz, nx)
+        dead_mask = dead[:, :, channel_idx].T    # (nz, nx)
+
+        # Flatten to (n_pixels, 3) and (n_pixels,)
+        det_flat = det_pos.reshape(-1, 3)
+        val_flat = values.reshape(-1)
+        live = ~dead_mask.reshape(-1)
+
+        det_flat = det_flat[live]
+        val_flat = val_flat[live]
+
+        n_live = live.sum()
+
+        # Source is the same for every pixel in this projection
+        src_repeated = np.broadcast_to(
+            info["source_pos"], (n_live, 3)
+        ).copy()
+
+        # Build rows: [src_x, src_y, src_z, det_x, det_y, det_z, value]
+        rows = np.empty((n_live, 7), dtype=np.float64)
+        rows[:, 0:3] = src_repeated
+        rows[:, 3:6] = det_flat
+        rows[:, 6] = val_flat
+
+        all_rows.append(rows)
+        # Raw counts: [total (scatter+primary), primary, blank] -- shape (nx, nz, 3)
+        raw_counts = np.stack(
+            [phantom_both[:, :, 0], phantom_both[:, :, 1], blank_both[:, :, 0]],
+            axis=2,
+        )
+        projection_images.append(raw_counts)
+        # u/v pixel-step vectors in world coordinates (same convention as
+        # zigzag_3d ASTRA vectors: u = pix_size_x * x_det,
+        #                          v = pix_size_z * z_det)
+        x_det = np.cross(rot_axis, info["direction"])
+        x_det /= np.linalg.norm(x_det)
+        z_det = rot_axis.copy()
+        pix_size_x = Sim_config.DETECTOR_WIDTH_X / nx
+        pix_size_z = Sim_config.DETECTOR_HEIGHT_Z / nz
+        u_world = pix_size_x * x_det
+        v_world = pix_size_z * z_det
+
+        # One explicit geometry row per projection:
+        # [proj_idx, angle_deg, src_x, src_y, src_z,
+        #  det_center_x, det_center_y, det_center_z,
+        #  u_x, u_y, u_z, v_x, v_y, v_z]
+        projection_rows.append(
+            np.array(
+                [
+                    projection_counter,
+                    info["angle_deg"],
+                    info["source_pos"][0],
+                    info["source_pos"][1],
+                    info["source_pos"][2],
+                    det_center[0],
+                    det_center[1],
+                    det_center[2],
+                    u_world[0],
+                    u_world[1],
+                    u_world[2],
+                    v_world[0],
+                    v_world[1],
+                    v_world[2],
+                    info["direction"][0],
+                    info["direction"][1],
+                    info["direction"][2],
+                ],
+                dtype=np.float64,
             )
-
-            # Detector pixel positions -- shape (nz, nx, 3)
-            det_pos = compute_detector_pixels(
-                info["source_pos"],
-                info["direction"],
-                params["sdd"],
-                params["width_x"],
-                params["height_z"],
-                nx, nz,
-                params["offset_x"],
-                params["offset_z"],
-                params["rot_axis"],
-            )
-
-            # Find matching blank projection
-            proj_suffix = os.path.basename(header_file).replace(
-                f"{results_root}{sweep_tag}", ""
-            )
-            blank_header = os.path.join(
-                results_dir, f"{blank_results_root}{sweep_tag}{proj_suffix}"
-            )
-            blank_raw = blank_header + ".raw"
-            if not os.path.exists(blank_raw):
-                raise FileNotFoundError(
-                    f"Blank raw file not found: {blank_raw}"
-                )
-
-            # Read both channels for phantom and blank -- shape (nx, nz, 2)
-            phantom_both = read_raw_both_channels(raw_file, nx, nz)
-            blank_both = read_raw_both_channels(blank_raw, nx, nz)
-
-            # Normalize both channels: ln(blank / phantom), clipped to >= 0
-            eps = 0.5
-            log_both = np.log(np.maximum(blank_both, eps) / np.maximum(phantom_both, eps))
-            log_both = np.clip(log_both, 0, None)   # shape (nx, nz, 2)
-
-            # Dead pixels: both blank and phantom below half-photon floor -- exclude from listmode
-            dead = (blank_both < eps) & (phantom_both < eps)   # (nx, nz, 2)
-
-            # Select the channel used for listmode values.
-            # log_both is (nx, nz, 2); det_pos is (nz, nx, 3) -- transpose needed.
-            channel_idx = 0 if signal_channel == "total" else 1
-            values = log_both[:, :, channel_idx].T   # (nz, nx)
-            dead_mask = dead[:, :, channel_idx].T    # (nz, nx)
-
-            # Flatten to (n_pixels, 3) and (n_pixels,)
-            det_flat = det_pos.reshape(-1, 3)
-            val_flat = values.reshape(-1)
-            live = ~dead_mask.reshape(-1)
-
-            det_flat = det_flat[live]
-            val_flat = val_flat[live]
-
-            n_live = live.sum()
-
-            # Source is the same for every pixel in this projection
-            src_repeated = np.broadcast_to(
-                info["source_pos"], (n_live, 3)
-            ).copy()
-
-            # Build rows: [src_x, src_y, src_z, det_x, det_y, det_z, value]
-            rows = np.empty((n_live, 7), dtype=np.float64)
-            rows[:, 0:3] = src_repeated
-            rows[:, 3:6] = det_flat
-            rows[:, 6] = val_flat
-
-            all_rows.append(rows)
-            # Raw counts: [total (scatter+primary), primary, blank] -- shape (nx, nz, 3)
-            raw_counts = np.stack(
-                [phantom_both[:, :, 0], phantom_both[:, :, 1], blank_both[:, :, 0]],
-                axis=2,
-            )
-            projection_images.append(raw_counts)
-            # u/v pixel-step vectors in world coordinates (same convention as
-            # zigzag_3d ASTRA vectors: u = pix_size_x * x_det,
-            #                          v = pix_size_z * z_det)
-            x_det = np.cross(params["rot_axis"], info["direction"])
-            x_det /= np.linalg.norm(x_det)
-            z_det = params["rot_axis"].copy()
-            pix_size_x = params["width_x"] / nx
-            pix_size_z = params["height_z"] / nz
-            u_world = pix_size_x * x_det
-            v_world = pix_size_z * z_det
-
-            # One explicit geometry row per projection:
-            # [proj_idx, angle_deg, src_x, src_y, src_z,
-            #  det_center_x, det_center_y, det_center_z,
-            #  u_x, u_y, u_z, v_x, v_y, v_z]
-            projection_rows.append(
-                np.array(
-                    [
-                        projection_counter,
-                        info["angle_deg"],
-                        info["source_pos"][0],
-                        info["source_pos"][1],
-                        info["source_pos"][2],
-                        det_center[0],
-                        det_center[1],
-                        det_center[2],
-                        u_world[0],
-                        u_world[1],
-                        u_world[2],
-                        v_world[0],
-                        v_world[1],
-                        v_world[2],
-                        info["direction"][0],
-                        info["direction"][1],
-                        info["direction"][2],
-                    ],
-                    dtype=np.float64,
-                )
-            )
-            projection_counter += 1
+        )
+        projection_counter += 1
 
     # Stack everything
     result = np.vstack(all_rows)
@@ -261,11 +227,6 @@ if __name__ == "__main__":
         description="Build listmode data from MC-GPU simulation results."
     )
     parser.add_argument(
-        "--in-root",
-        required=True,
-        help="Root name for input files (e.g. 'sweep' finds sweep_*.in)",
-    )
-    parser.add_argument(
         "--results-dir",
         required=True,
         help="Directory containing the MC-GPU result files",
@@ -273,14 +234,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--results-root",
         required=True,
-        help="Root name for result files (e.g. 'test_results' finds "
-             "test_results_{sweep_tag}_*)",
+        help="Root name for result files (e.g. 'proj_phantom' finds proj_phantom_*)",
     )
     parser.add_argument(
         "--blank-results-root",
         required=True,
-        help="Root name for blank (air) result files (e.g. 'projection_blank' "
-             "finds projection_blank_{sweep_tag}_*)",
+        help="Root name for blank (air) result files (e.g. 'proj_blank' finds proj_blank_*)",
     )
     parser.add_argument(
         "--signal-channel",
@@ -290,7 +249,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     main(
-        args.in_root,
         args.results_dir,
         args.results_root,
         args.blank_results_root,
