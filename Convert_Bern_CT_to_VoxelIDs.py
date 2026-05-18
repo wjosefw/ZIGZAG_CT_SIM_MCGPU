@@ -20,7 +20,17 @@ def main(input_path, output_path=None, output_voxel_path=None, output_blank_path
     # Shape convention: transpose to (Z, Y, X) matching the notebook
     att = nii.get_fdata()[:, :, :, 0].T if nii.ndim == 4 else nii.get_fdata().T
     att = att.astype(np.float32)
-    print(f"Loaded {input_path.name}: shape={att.shape}, att range=[{att.min():.4g}, {att.max():.4g}]")
+    
+    imgdimz, imgdimy, imgdimx = att.shape
+    zooms = nii.header.get_zooms()
+    voxdimx, voxdimy, voxdimz = zooms[0], zooms[1], zooms[2]
+    
+    print(f"Loaded: {input_path.name}")
+    print(f"Att range: [{att.min():.4g}, {att.max():.4g}]")
+    print(f'Image Dimensions: {imgdimz, imgdimy, imgdimx}')
+    print(f'Voxel dimensions: {voxdimz, voxdimy, voxdimx}')
+    print(f'Image Center: {imgdimz*voxdimz/2:.3f}, {imgdimy*voxdimy/2:.3f}, {imgdimx*voxdimx/2:.3f}')
+    print(f'Center Position of voxel (0,0,0) if phantom is centered in coordinate origin: {(-imgdimz*voxdimz/2) + voxdimz/2:.5f}, {(-imgdimy*voxdimy/2) + voxdimy/2:.5f}, {(-imgdimy*voxdimy/2) + voxdimy/2:.5f}')
 
     # Convert attenuation -> HU
     CT_HU = convert_attenuation_map_to_hu(att, kVp=kVp)
