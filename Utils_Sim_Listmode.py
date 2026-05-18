@@ -8,7 +8,105 @@ import re
 import subprocess
 import numpy as np
 import Sim_config
-from mcgpu_writer import write_in_file
+
+
+# ---------------------------------------------------------------------------
+# MC-GPU .in file writer
+# ---------------------------------------------------------------------------
+
+_VALID_OVERRIDES = frozenset(k.lower() for k in vars(Sim_config) if k.isupper())
+
+
+def write_in_file(path, overrides=None):
+    """Write a valid MC-GPU .in file to *path*.
+
+    All values come from Sim_config. Any key in *overrides* replaces the
+    corresponding Sim_config value for this file only.
+    """
+    if overrides is None:
+        overrides = {}
+
+    unknown = set(overrides) - _VALID_OVERRIDES
+    if unknown:
+        raise ValueError(f"Unknown override key(s): {sorted(unknown)}")
+
+    def g(key):
+        return overrides.get(key, getattr(Sim_config, key.upper()))
+
+    with open(path, 'w') as f:
+        f.write("\n")
+        f.write("# \n")
+        f.write("# >>>> INPUT FILE FOR MC-GPU v1.5 VICTRE-DBT >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n")
+        f.write("#\n")
+        f.write("\n")
+
+        f.write("#[SECTION SIMULATION CONFIG v.2009-05-12]\n")
+        f.write(f"{g('n_histories')}                        # TOTAL NUMBER OF HISTORIES, OR SIMULATION TIME IN SECONDS IF VALUE < 100000\n")
+        f.write(f"{g('random_seed')}            # RANDOM SEED (ranecu PRNG)\n")
+        f.write(f"{g('gpu_number')}                               # GPU NUMBER TO USE WHEN MPI IS NOT USED, OR TO BE AVOIDED IN MPI RUNS\n")
+        f.write(f"{g('gpu_threads_per_block')}                             # GPU THREADS PER CUDA BLOCK (multiple of 32)\n")
+        f.write(f"{g('histories_per_thread')}                          # SIMULATED HISTORIES PER GPU THREAD\n")
+        f.write(" \n")
+
+        f.write("#[SECTION SOURCE v.2016-12-02]\n")
+        f.write(f"{g('spectrum_file')} # X-RAY ENERGY SPECTRUM FILE\n")
+        f.write(f"{g('source_x')}  {g('source_y')}   {g('source_z')}            # SOURCE POSITION: X (chest-to-nipple), Y (right-to-left), Z (caudal-to-cranial) [cm]\n")
+        f.write(f" {g('source_dir_u')}    {g('source_dir_v')}    {g('source_dir_w')}             # SOURCE DIRECTION COSINES: U V W\n")
+        f.write(f"{g('beam_aperture_azimuthal')}    {g('beam_aperture_polar')}    # TOTAL AZIMUTHAL (WIDTH, X) AND POLAR (HEIGHT, Z) APERTURES OF THE FAN BEAM [degrees] (input negative to automatically cover the whole detector)\n")
+        f.write(f"{g('euler_alpha')}   {g('euler_beta')}  {g('euler_gamma')}             # EULER ANGLES (RzRyRz) TO ROTATE RECTANGULAR BEAM FROM DEFAULT POSITION AT Y=0, NORMAL=(0,-1,0)\n")
+        f.write(f" {g('focal_spot_fwhm')}                      # SOURCE GAUSSIAN FOCAL SPOT FWHM [cm]\n")
+        f.write(f" {g('angular_blur')}                              # ANGULAR BLUR DUE TO MOVEMENT ([exposure_time]*[angular_speed]) [degrees]\n")
+        f.write(f"{g('collimate_beam')}                             # COLLIMATE BEAM TOWARDS POSITIVE AZIMUTHAL (X) ANGLES ONLY? (ie, cone-beam center aligned with chest wall in mammography) [YES/NO]\n")
+        f.write(" \n")
+
+        f.write("#[SECTION IMAGE DETECTOR v.2017-06-20]\n")
+        f.write(f"{g('output_name')}    # OUTPUT IMAGE FILE NAME\n")
+        f.write(f"{g('detector_nx')}   {g('detector_nz')}                  # NUMBER OF PIXELS IN THE IMAGE: Nx Nz\n")
+        f.write(f"{g('detector_width_x')}    {g('detector_height_z')}                 # IMAGE SIZE (width, height): Dx Dz [cm]\n")
+        f.write(f"{g('sdd')}                           # SOURCE-TO-DETECTOR DISTANCE (detector set in front of the source, perpendicular to the initial direction)\n")
+        f.write(f" {g('image_offset_x')}    {g('image_offset_z')}                     # IMAGE OFFSET ON DETECTOR PLANE IN WIDTH AND HEIGHT DIRECTIONS (BY DEFAULT BEAM CENTERED AT IMAGE CENTER) [cm]\n")
+        f.write(f" {g('detector_thickness')}                         # DETECTOR THICKNESS [cm]\n")
+        f.write(f" {g('detector_mfp')}  # ==> MFP(Se,19.0keV)   # DETECTOR MATERIAL MEAN FREE PATH AT AVERAGE ENERGY [cm]\n")
+        f.write(f" {g('detector_kedge_energy')} {g('detector_kfluor_energy')} {g('detector_kfluor_yield')} {g('detector_kfluor_mfp')}  # DETECTOR K-EDGE ENERGY [eV], K-FLUORESCENCE ENERGY [eV], K-FLUORESCENCE YIELD, MFP AT FLUORESCENCE ENERGY [cm]\n")
+        f.write(f" {g('detector_gain')}    {g('swank_factor')}                   # EFECTIVE DETECTOR GAIN, W_+- [eV/ehp], AND SWANK FACTOR (input 0 to report ideal energy fluence)\n")
+        f.write(f" {g('electronic_noise')}                         # ADDITIVE ELECTRONIC NOISE LEVEL (electrons/pixel)\n")
+        f.write(f" {g('cover_thickness')}  {g('cover_mfp')}          # ==> MFP(polystyrene,19keV)       # PROTECTIVE COVER THICKNESS (detector+grid) [cm], MEAN FREE PATH AT AVERAGE ENERGY [cm]\n")
+        f.write(f" {g('grid_ratio')}   {g('grid_frequency')}   {g('grid_strip_thickness')}            # ANTISCATTER GRID RATIO, FREQUENCY, STRIP THICKNESS [X:1, lp/cm, cm] (enter 0 to disable the grid)\n")
+        f.write(f" {g('grid_strips_mfp')}   {g('grid_interspace_mfp')}   # ==> MFP(lead&polystyrene,19keV)  # ANTISCATTER STRIPS AND INTERSPACE MEAN FREE PATHS AT AVERAGE ENERGY [cm]\n")
+        f.write(f" {g('grid_orientation')}                              # ORIENTATION 1D FOCUSED ANTISCATTER GRID LINES: 0==STRIPS PERPENDICULAR LATERAL DIRECTION (mammo style); 1==STRIPS PARALLEL LATERAL DIRECTION (DBT style)\n")
+        f.write("\n")
+
+        f.write("#[SECTION TOMOGRAPHIC TRAJECTORY v.2016-12-02]\n")
+        f.write(f"{g('n_projections')}     # ==> 1 for mammo only; ==> 25 for mammo + DBT    # NUMBER OF PROJECTIONS (1 disables the tomographic mode)\n")
+        f.write(f"{g('sod')}                            # SOURCE-TO-ROTATION AXIS DISTANCE\n")
+        f.write(f"{g('angle_between_projections')}          # ANGLE BETWEEN PROJECTIONS (360/num_projections for full CT) [degrees]\n")
+        f.write(f"{g('rotation_to_first_projection')}                           # ANGULAR ROTATION TO FIRST PROJECTION (USEFUL FOR DBT, INPUT SOURCE DIRECTION CONSIDERED AS 0 DEGREES) [degrees]\n")
+        f.write(f"{g('rot_axis_x')}  {g('rot_axis_y')}  {g('rot_axis_z')}                  # AXIS OF ROTATION (Vx,Vy,Vz)\n")
+        f.write(f"{g('translation_along_axis')}                           # TRANSLATION ALONG ROTATION AXIS BETWEEN PROJECTIONS (HELICAL SCAN) [cm]\n")
+        f.write(f"{g('keep_detector_fixed')}                             # KEEP DETECTOR FIXED AT 0 DEGREES FOR DBT? [YES/NO]\n")
+        f.write(f"{g('simulate_both')}                            # SIMULATE BOTH 0 deg PROJECTION AND TOMOGRAPHIC SCAN (WITHOUT GRID) WITH 2/3 TOTAL NUM HIST IN 1st PROJ (eg, DBT+mammo)? [YES/NO]\n")
+        f.write("\n")
+
+        f.write("#[SECTION DOSE DEPOSITION v.2012-12-12]\n")
+        f.write(f"{g('tally_material_dose')}                              # TALLY MATERIAL DOSE? [YES/NO] (disabled for crash isolation)\n")
+        f.write(f"{g('tally_voxel_dose')}                              # TALLY 3D VOXEL DOSE? [YES/NO] (dose measured separately for each voxel)\n")
+        f.write(f"{g('dose_output_file')}                 # OUTPUT VOXEL DOSE FILE NAME\n")
+        f.write(f"  {g('dose_roi_x_min')} {g('dose_roi_x_max')}                         # VOXEL DOSE ROI: X-index min max (must be within phantom Nx=512)\n")
+        f.write(f"  {g('dose_roi_y_min')} {g('dose_roi_y_max')}                         # VOXEL DOSE ROI: Y-index min max (must be within phantom Ny=512)\n")
+        f.write(f"{g('dose_roi_z_min')}  {g('dose_roi_z_max')}                        # VOXEL DOSE ROI: Z-index min max\n")
+        f.write(" \n")
+
+        f.write("#[SECTION VOXELIZED GEOMETRY FILE v.2017-07-26]\n")
+        f.write(f"{g('phantom_file')}\n")
+        f.write(f" {g('phantom_offset_x')}    {g('phantom_offset_y')}    {g('phantom_offset_z')}              # OFFSET OF THE VOXEL GEOMETRY (DEFAULT ORIGIN AT LOWER BACK CORNER) [cm]\n")
+        f.write(f" {g('phantom_nx')}    {g('phantom_ny')}    {g('phantom_nz')}              # NUMBER OF VOXELS: INPUT A 0 TO READ ASCII FORMAT WITH HEADER SECTION, RAW VOXELS WILL BE READ OTHERWISE\n")
+        f.write(f"{g('voxel_size_x')} {g('voxel_size_y')} {g('voxel_size_z')}   # VOXEL SIZES [cm]\n")
+        f.write(f" {g('tree_nx')} {g('tree_ny')} {g('tree_nz')}                        # SIZE OF LOW RESOLUTION VOXELS THAT WILL BE DESCRIBED BY A BINARY TREE, GIVEN AS POWERS OF TWO (eg, 2 2 3 = 2^2x2^2x2^3 = 128 input voxels per low res voxel; 0 0 0 disables tree)\n")
+        f.write(" \n")
+
+        f.write("#[SECTION MATERIAL FILE LIST v.2009-11-30]\n")
+        for i, (mat_file, density, voxel_id) in enumerate(g('materials'), start=1):
+            f.write(f"{mat_file}    density={density}     voxelId={voxel_id}       #   {i:2d}th MATERIAL FILE\n")
 
 
 # ---------------------------------------------------------------------------
