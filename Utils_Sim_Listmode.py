@@ -285,7 +285,7 @@ def subsample_slicewise(vectors, xax, yax, zmin=-100, zmax=100,
 #-------------- CT sweep execution helpers ------------
 #------------------------------------------------------
 
-def generate_sweeps(z_step, label, out_base,
+def generate_sweeps(z_step, out_base,
                     phantom_path, output_dir, results_dir, projections_per_sweep,
                     angle_between, total_projections):
     """Generate .in files for one scan type (blank or phantom).
@@ -303,9 +303,9 @@ def generate_sweeps(z_step, label, out_base,
 
     while remaining > 0:
         n_proj = min(projections_per_sweep, remaining)
-        sweep_name = os.path.join(results_dir, f"{out_base}_sweep_{sweep:04d}")
-        in_filename = f"{label}_sweep_{sweep:04d}.in"
-        in_filepath = os.path.join(output_dir, in_filename)
+        stem = f"{out_base}_sweep_{sweep:04d}"
+        sweep_name = os.path.join(results_dir, stem)
+        in_filepath = os.path.join(output_dir, stem + ".in")
 
         source_z = Sim_config.SOURCE_Z + cumulative_z
         write_in_file(in_filepath, {
@@ -320,7 +320,7 @@ def generate_sweeps(z_step, label, out_base,
 
         sweep_files.append(in_filepath)
         sweep_info.append({
-            "file": in_filename, "n_proj": n_proj,
+            "file": stem + ".in", "n_proj": n_proj,
             "source_z": source_z, "angle_start": cumulative_angle,
             "z_step": current_translation,
         })

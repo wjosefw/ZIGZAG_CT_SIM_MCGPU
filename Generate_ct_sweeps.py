@@ -86,8 +86,7 @@ def main(num_sweeps, total_z, z_step,
 
     # Generate blank sweep files (both modes need them)
     blank_files, blank_sweep_info = generate_sweeps(
-        z_step,
-        "blank", blank_output, blank_path, output_dir, results_dir,
+        z_step, blank_output, blank_path, output_dir, results_dir,
         projections_per_sweep, angle_between, total_projections,
     )
 
@@ -96,8 +95,7 @@ def main(num_sweeps, total_z, z_step,
     # -----------------------------------------------------------------------
     if mode == 'full':
         phantom_files, phantom_sweep_info = generate_sweeps(
-            z_step,
-            "phantom", phantom_output, phantom_path, output_dir, results_dir,
+            z_step, phantom_output, phantom_path, output_dir, results_dir,
             projections_per_sweep, angle_between, total_projections,
         )
 
