@@ -21,8 +21,8 @@ import argparse
 import subprocess
 
 import Sim_config
-from mcgpu_writer import write_in_file
 from Utils_Sim_Listmode import (
+    write_in_file,
     compute_euler_angles,
     generate_sweeps,
     run_sweeps,
