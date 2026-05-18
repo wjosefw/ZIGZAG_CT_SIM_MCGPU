@@ -14,24 +14,18 @@ import numpy as np
 # Map element name → atomic number for lookup during parsing
 ELEMENT_Z = {
     "Hydrogen": 1, "Carbon": 6, "Nitrogen": 7, "Oxygen": 8,
-    "Magnesium": 12, "Phosphorus": 15, "Sulfur": 16, "Chlorine": 17,
+    "Magnesium": 12, "Phosphor": 15, "Sulfur": 16, "Chlorine": 17,
     "Argon": 18, "Calcium": 20, "Sodium": 11, "Potassium": 19,
     "Titanium": 22, "Copper": 29, "Zinc": 30, "Silver": 47, "Tin": 50,
 }
 
-ELEMENT_ALIASES = {
-    "Phosphor": "Phosphorus",
-}
-
 
 def _element_name_to_z(element_name):
-    canonical_name = ELEMENT_ALIASES.get(element_name, element_name)
-    if canonical_name not in ELEMENT_Z:
+    if element_name not in ELEMENT_Z:
         raise ValueError(
-            f"Unknown element '{element_name}' (canonical '{canonical_name}'). "
-            "Extend ELEMENT_Z/ELEMENT_ALIASES in Utils_Materials.py."
+            f"Unknown element '{element_name}'. Extend ELEMENT_Z in Utils_Materials.py."
         )
-    return ELEMENT_Z[canonical_name]
+    return ELEMENT_Z[element_name]
 
 # ---------------------------------------------------------------------------
 
