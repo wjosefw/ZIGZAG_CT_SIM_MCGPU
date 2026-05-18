@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import nibabel as nib
 import numpy as np
 
 # ---------------------------------------------------------------------------
@@ -19,6 +20,20 @@ ELEMENT_Z = {
     "Titanium": 22, "Copper": 29, "Zinc": 30, "Silver": 47, "Tin": 50,
 }
 
+
+def read_nii(file_path):
+    """Load a NIfTI file and return (img, (zax, yax, xax)) with axes in mm."""
+    nii = nib.load(file_path)
+    img = nii.get_fdata()[:, :, :, 0].T if nii.ndim == 4 else nii.get_fdata().T
+    img = img.astype(np.float32)
+    imgdimz, imgdimy, imgdimx = img.shape
+    voxdimx, voxdimy, voxdimz = np.abs(nii.affine).diagonal()[:3]
+    zax = np.arange(-imgdimz*voxdimz/2, imgdimz*voxdimz/2 + voxdimz, voxdimz)
+    yax = np.arange(-imgdimy*voxdimy/2, imgdimy*voxdimy/2 + voxdimy, voxdimy)
+    xax = np.arange(-imgdimx*voxdimx/2, imgdimx*voxdimx/2 + voxdimx, voxdimx)
+    return img, (zax, yax, xax)
+
+# ---------------------------------------------------------------------------
 
 def _element_name_to_z(element_name):
     if element_name not in ELEMENT_Z:

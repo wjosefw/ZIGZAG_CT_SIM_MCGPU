@@ -3,10 +3,9 @@
 import argparse
 from pathlib import Path
 
-import nibabel as nib
 import numpy as np
 
-from Utils_Materials import load_bern_materials, convert_attenuation_map_to_hu
+from Utils_Materials import load_bern_materials, convert_attenuation_map_to_hu, read_nii
 
 
 def main(input_path, output_path=None, output_voxel_path=None, output_blank_path=None, kVp=100):
@@ -16,14 +15,11 @@ def main(input_path, output_path=None, output_voxel_path=None, output_blank_path
     output_blank_path = Path(output_blank_path) if output_blank_path else input_path.with_name(input_path.stem + "_blank.bin")
 
     # Load .nii attenuation map
-    nii = nib.load(str(input_path))
-    # Shape convention: transpose to (Z, Y, X) matching the notebook
-    att = nii.get_fdata()[:, :, :, 0].T if nii.ndim == 4 else nii.get_fdata().T
-    att = att.astype(np.float32)
-    
+    att, (zax, yax, xax) = read_nii(input_path)
     imgdimz, imgdimy, imgdimx = att.shape
-    zooms = nii.header.get_zooms()
-    voxdimx, voxdimy, voxdimz = zooms[0], zooms[1], zooms[2]
+    voxdimz = zax[1] - zax[0]
+    voxdimy = yax[1] - yax[0]
+    voxdimx = xax[1] - xax[0]
     
     print(f"Loaded: {input_path.name}")
     print(f"Att range: [{att.min():.4g}, {att.max():.4g}]")

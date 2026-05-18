@@ -228,23 +228,6 @@ def compute_euler_angles(dir_x, dir_y, dir_z):
     return alpha, beta, gamma
 
 
-#------------------------------------------------------
-#--------------- NIfTI / geometry helpers -------------
-#------------------------------------------------------
-
-import nibabel as nib
-
-
-def read_nii(file_path):
-    """Load a NIfTI file and return (img, (zax, yax, xax)) with axes in mm."""
-    nii = nib.load(file_path)
-    img = nii.get_fdata()[:, :, :, 0].T
-    imgdimz, imgdimy, imgdimx = img.shape
-    voxdimx, voxdimy, voxdimz = np.abs(nii.affine).diagonal()[:3]
-    zax = np.arange(-imgdimz*voxdimz/2, imgdimz*voxdimz/2 + voxdimz, voxdimz)
-    yax = np.arange(-imgdimy*voxdimy/2, imgdimy*voxdimy/2 + voxdimy, voxdimy)
-    xax = np.arange(-imgdimx*voxdimx/2, imgdimx*voxdimx/2 + voxdimx, voxdimx)
-    return img, (zax, yax, xax)
 
 
 def subsample_slicewise(vectors, xax, yax, zmin=-100, zmax=100,
