@@ -234,11 +234,11 @@ def main(num_sweeps, total_z, z_step,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Generate MC-GPU input files and run zigzag CT sweeps.")
-    parser.add_argument("num_sweeps",  type=int,
+    parser.add_argument("--num-sweeps",  type=int, required=True,
                         help="Number of vertical sweeps in a full 360-degree rotation")
-    parser.add_argument("total_z",     type=float,
+    parser.add_argument("--total-z",     type=float, required=True,
                         help="Total vertical distance per sweep [cm]")
-    parser.add_argument("z_step",      type=float,
+    parser.add_argument("--z-step",      type=float, required=True,
                         help="Vertical step between projections [cm]")
     parser.add_argument("--phantom-path",   required=True,
                         help="Voxelized geometry file for the phantom scan")
