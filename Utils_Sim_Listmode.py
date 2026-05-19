@@ -343,8 +343,8 @@ def select_sweep_subsets(header_files, z_step, zmin, zmax):
     z_margin : float [cm]
     """
     all_entries = []   # (sweep_idx, proj_idx, source_pos, direction)
-    nx, nz = None, None
 
+    # Parse all header files to get projections info
     for hf in header_files:
         m = re.search(r'_sweep_(\d+)_(\d+)$', os.path.basename(hf))
         if not m:
@@ -353,10 +353,10 @@ def select_sweep_subsets(header_files, z_step, zmin, zmax):
         proj_idx  = int(m.group(2))   # 1-based
 
         info = parse_header(hf)
-        if nx is None:
-            nx, nz = info['nx'], info['nz']
+        nx, nz = info['nx'], info['nz']
         all_entries.append((sweep_idx, proj_idx, info['source_pos'], info['direction']))
 
+    # Get boolean mask to filter only thos insede the z margin
     all_positions = np.array([e[2] for e in all_entries])   # (N, 3)
 
     D_z    = Sim_config.DETECTOR_HEIGHT_Z / nz
@@ -374,20 +374,16 @@ def select_sweep_subsets(header_files, z_step, zmin, zmax):
         SOD=SOD, ODD=ODD,
         return_mask=True,
     )
+    
+    # Filter selected sweeps and group by sweep
+    filtered = [e for e, keep in zip(all_entries, bool_mask) if keep]
 
-    print(f"  Z margin: {z_margin:.4f} cm  →  effective range "
-          f"[{zmin - z_margin:.4f}, {zmax + z_margin:.4f}] cm")
-
-    # Group selected entries by sweep
     sweep_data = {}
-    for (sweep_idx, proj_idx, src_pos, direction), keep in zip(all_entries, bool_mask):
-        if not keep:
-            continue
+    for sweep_idx, proj_idx, src_pos, direction in filtered:
         sweep_data.setdefault(sweep_idx, []).append((proj_idx, src_pos, direction))
-
+    
+    # Get starting projection (first to enter region) per each sweep
     subsets = []
-    total_proj = 0
-
     for sweep_idx in sorted(sweep_data):
         z_step_signed = z_step if sweep_idx % 2 == 0 else -z_step
         going_up = z_step_signed > 0
@@ -412,12 +408,5 @@ def select_sweep_subsets(header_files, z_step, zmin, zmax):
             'direction':     direction,
             'z_step_signed': z_step_signed,
         })
-        total_proj += n_proj_subset
-
-        direction_label = 'up' if z_step_signed > 0 else 'down'
-        print(f"  Sweep {sweep_idx:04d} ({direction_label}): "
-              f"proj {i_start_orig:04d}–{i_start_orig + n_proj_subset - 1:04d}  "
-              f"({n_proj_subset} projections)")
-
-    print(f"  Total: {len(subsets)} sweeps, {total_proj} projections")
+    
     return subsets, z_margin
