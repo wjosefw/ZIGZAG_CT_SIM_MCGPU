@@ -131,7 +131,6 @@ def main(num_sweeps, total_z, z_step,
         pattern = os.path.join(results_dir, f"{blank_output}_sweep_*")
         all_files = sorted(glob.glob(pattern))
         header_files = [f for f in all_files if not f.endswith('.raw')]
-        print(f"\nFound {len(header_files)} blank headers in {results_dir}")
 
         # Group by sweep, find contiguous block per sweep inside Z region
         subsets, z_margin = select_sweep_subsets(
@@ -151,7 +150,6 @@ def main(num_sweeps, total_z, z_step,
             z_step_signed = sub['z_step_signed']
 
             # Copy blank files, renaming to 1-based subset indices
-            print(f"\n  Sweep {sweep_idx:04d}: copying {n_proj_subset} blank files")
             for j in range(n_proj_subset):
                 orig_idx = i_start_orig + j
                 src = os.path.join(results_dir,
@@ -187,12 +185,6 @@ def main(num_sweeps, total_z, z_step,
                 "output_name":                  out_name,
                 "phantom_file":                 phantom_path,
             })
-
-            direction_label = 'up' if z_step_signed > 0 else 'down'
-            print(f"  Sweep {sweep_idx:04d} ({direction_label}): "
-                  f"{n_proj_subset} proj  "
-                  f"src=({src_x:.3f},{src_y:.3f},{src_z:.3f})  "
-                  f"z_step={z_step_signed:+.4f} cm")
 
             try:
                 subprocess.run(["mpirun", "-n", "1", mcgpu, tmp_in], check=True)
