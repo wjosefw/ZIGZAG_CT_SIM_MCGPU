@@ -333,7 +333,7 @@ def write_named_material_input(output_dir, materials):
                 lines.append(f"{entry['weight_fraction']:.6f}")
 
         lines.append("2")                  # Don't change I
-        lines.append(f"{density:.6f}")     # Density in g/cm3
+        lines.append(str(density))         # Density in g/cm3
         lines.append("2")                  # Don't change Fcb/Wcb
         lines.append(f"{name}.mat")        # Output filename
 
