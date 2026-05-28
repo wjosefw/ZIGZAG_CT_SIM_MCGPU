@@ -5,7 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from Utils_Materials import load_bern_materials, convert_attenuation_map_to_hu, read_nii
+from bern_materials_db import HU_SECTIONS
+from Utils_Materials import convert_attenuation_map_to_hu, read_nii
 
 
 def main(input_path, output_path=None, output_voxel_path=None, output_blank_path=None, kVp=100):
@@ -32,17 +33,14 @@ def main(input_path, output_path=None, output_voxel_path=None, output_blank_path
     CT_HU = convert_attenuation_map_to_hu(att, kVp=kVp)
     print(f"HU range: [{CT_HU.min():.4g}, {CT_HU.max():.4g}]")
 
-    # Load Bern material sections
-    bern = load_bern_materials()
-    hu_sections = bern["hu_material_sections"]
-    n_materials = len(hu_sections) - 1
-    print(f"Bern materials: {n_materials}, HU sections: {hu_sections[0]:.4g} .. {hu_sections[-1]:.4g}")
+    n_materials = len(HU_SECTIONS) - 1
+    print(f"Bern materials: {n_materials}, HU sections: {HU_SECTIONS[0]:.4g} .. {HU_SECTIONS[-1]:.4g}")
 
     # Map HU -> voxelId (0-indexed: material 1 → id 0, material 2 → id 1, ...)
     voxel_ids = np.zeros(CT_HU.shape, dtype=np.int32)
     for i in range(n_materials):
-        lo = float(hu_sections[i])
-        hi = float(hu_sections[i + 1])
+        lo = float(HU_SECTIONS[i])
+        hi = float(HU_SECTIONS[i + 1])
         if i < n_materials - 1:
             mask = (CT_HU >= lo) & (CT_HU < hi)
         else:
