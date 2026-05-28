@@ -1,28 +1,50 @@
-"""Generate Bern .mcgpu files from .mat and write MC-GPU material list.
+"""Generate .mcgpu cross-section files and a MC-GPU material list.
 
-This script is independent from Schneider utilities and uses densities parsed
-from Bern_materials.txt to build the material list.
+Material data is imported directly from bern_materials_db or gate_materials_db
+— no text-file parsing at runtime.
+
+Prerequisites
+-------------
+PENELOPE .mat files must already exist — run Generate_PENELOPE_materials_Bern.py
+first.
+
+Usage example
+-------------
+python Generate_MCGPU_materials_and_list_Bern.py --source bern \\
+    --PENELOPE-mat-dir pendbase/ \\
+    --mcgpu-output-dir MC_GPU_materials_bern/ \\
+    --mcgpu-exe        MC-GPU_create_material_data.x
+
+python Generate_MCGPU_materials_and_list_Bern.py --source gate \\
+    --PENELOPE-mat-dir pendbase/ \\
+    --mcgpu-output-dir MC_GPU_materials_gate/ \\
+    --mcgpu-exe        MC-GPU_create_material_data.x
 """
 
 import argparse
 from pathlib import Path
 
-from Utils_Materials import load_bern_materials, run_mcgpu_material_creation, write_material_list_from_bern
+from bern_materials_db import MATERIALS as BERN_MATERIALS
+from gate_materials_db import MATERIALS as GATE_MATERIALS
+from Utils_Materials import run_mcgpu_material_creation, write_material_list
+
+SOURCES = {
+    "bern": BERN_MATERIALS,
+    "gate": GATE_MATERIALS,
+}
 
 
 def main(
-    bern_path,
+    source,
     mat_input_dir,
     mcgpu_output_dir,
     mcgpu_exe,
-    material_prefix,
     e_min_keV=5,
     e_max_keV=150,
     n_points=1495,
 ):
-    bern = load_bern_materials(bern_path)
-    materials = bern["materials"]
-    print(f"Loaded {len(materials)} Bern materials from {bern_path}")
+    materials = SOURCES[source]
+    print(f"Loaded {len(materials)} materials from {source}_materials_db")
 
     run_mcgpu_material_creation(
         mat_input_dir=mat_input_dir,
@@ -33,49 +55,45 @@ def main(
         n_points=n_points,
     )
 
-    material_list_path = Path.cwd() / "material_list_bern.txt"
-    write_material_list_from_bern(
-        bern_materials=materials,
+    material_list_path = Path.cwd() / f"material_list_{source}.txt"
+    write_material_list(
+        materials,
         mcgpu_output_dir=mcgpu_output_dir,
         material_list_path=material_list_path,
-        material_prefix=material_prefix,
+        material_prefix="",
         e_min_keV=e_min_keV,
         e_max_keV=e_max_keV,
     )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--bern-path",
-        required=True,
-        help="Path to Bern material definition file",
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--mat-input-dir",
+        "--source",
+        choices=["bern", "gate"],
+        default="bern",
+        help="Material database to use (default: bern)",
+    )
+    parser.add_argument(
         "--PENELOPE-mat-dir",
         dest="mat_input_dir",
         required=True,
-        help="Directory containing Bern .mat files",
+        help="Directory containing the PENELOPE .mat files",
     )
     parser.add_argument(
         "--mcgpu-output-dir",
         required=True,
-        help="Directory to write Bern .mcgpu files",
+        help="Directory to write .mcgpu cross-section files",
     )
     parser.add_argument(
         "--mcgpu-exe",
         required=True,
         help="Path to MC-GPU_create_material_data.x executable",
     )
-    parser.add_argument(
-        "--material-prefix",
-        default="",
-        help=(
-            "Prefix written in material list before each .mcgpu filename "
-            "(default: basename of --mcgpu-output-dir)"
-        ),
-    )
+
     parser.add_argument(
         "--e-min-keV",
         type=int,
@@ -96,11 +114,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     main(
-        bern_path=args.bern_path,
+        source=args.source,
         mat_input_dir=args.mat_input_dir,
         mcgpu_output_dir=args.mcgpu_output_dir,
         mcgpu_exe=args.mcgpu_exe,
-        material_prefix=args.material_prefix,
         e_min_keV=args.e_min_keV,
         e_max_keV=args.e_max_keV,
         n_points=args.n_points,

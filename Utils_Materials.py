@@ -2,24 +2,12 @@
 # Centralized utility functions for material handling
 
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
-
-# ---------------------------------------------------------------------------
-
-# Map element name → atomic number for lookup during parsing
-ELEMENT_Z = {
-    "Hydrogen": 1, "Carbon": 6, "Nitrogen": 7, "Oxygen": 8,
-    "Magnesium": 12, "Phosphor": 15, "Sulfur": 16, "Chlorine": 17,
-    "Argon": 18, "Calcium": 20, "Sodium": 11, "Potassium": 19,
-    "Titanium": 22, "Copper": 29, "Zinc": 30, "Silver": 47, "Tin": 50,
-}
-
 
 def read_nii(file_path):
     """Load a NIfTI file and return (img, (zax, yax, xax)) with axes in mm."""
@@ -32,139 +20,6 @@ def read_nii(file_path):
     yax = np.arange(-imgdimy*voxdimy/2, imgdimy*voxdimy/2 + voxdimy, voxdimy)
     xax = np.arange(-imgdimx*voxdimx/2, imgdimx*voxdimx/2 + voxdimx, voxdimx)
     return img, (zax, yax, xax)
-
-# ---------------------------------------------------------------------------
-
-def _element_name_to_z(element_name):
-    if element_name not in ELEMENT_Z:
-        raise ValueError(
-            f"Unknown element '{element_name}'. Extend ELEMENT_Z in Utils_Materials.py."
-        )
-    return ELEMENT_Z[element_name]
-
-# ---------------------------------------------------------------------------
-
-def load_bern_materials(txt_path="Bern_materials.txt"):
-    """Load Bern material definitions from text file.
-
-    Returns:
-      {
-        "materials": [
-          {"id", "name", "density_g_cm3", "elements": [{"Z", "weight_fraction"}]}
-        ],
-        "compositions_by_id": {id: elements},
-        "densities_by_id": {id: density_g_cm3},
-        "names_by_id": {id: name},
-        "hu_material_sections": np.array of HU boundary values (length = n_materials + 1),
-      }
-    """
-    header_re = re.compile(
-        r"^([A-Za-z0-9_]+):\s*d=([0-9]*\.?[0-9]+)\s*(mg/cm3|g/cm3)\s*;\s*n=(\d+)\s*;\s*$"
-    )
-    element_re = re.compile(r"^\+el:\s*name=([^;]+);\s*f=([0-9]*\.?[0-9]+)\s*$")
-    section_re = re.compile(r"#\s*Material corresponding to H=\[\s*([+-]?[0-9]*\.?[0-9]+)\s*;\s*([+-]?[0-9]*\.?[0-9]+)\s*\]")
-
-    materials = []
-    current = None
-    # Collect section boundaries from comment lines; each comment gives [lo, hi]
-    # We accumulate unique boundary values in order to build the full boundary array.
-    section_boundaries = []
-    pending_lo = None
-
-    def finalize_current(material):
-        if material is None:
-            return
-        expected = material["n_expected"]
-        found = len(material["elements"])
-        if found != expected:
-            raise ValueError(
-                f"Material '{material['name']}' declares n={expected}, found {found} elements."
-            )
-
-        wf_sum = sum(e["weight_fraction"] for e in material["elements"])
-        if abs(wf_sum - 1.0) > 1e-3:
-            raise ValueError(
-                f"Material '{material['name']}' weight fractions sum to {wf_sum:.6f}, expected 1.0."
-            )
-
-        material["elements"] = sorted(material["elements"], key=lambda x: x["Z"])
-        del material["n_expected"]
-        materials.append(material)
-
-    for raw_line in Path(txt_path).read_text().splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        if line.startswith("#"):
-            sec_match = section_re.match(line)
-            if sec_match:
-                lo = float(sec_match.group(1))
-                hi = float(sec_match.group(2))
-                if not section_boundaries or section_boundaries[-1] != lo:
-                    section_boundaries.append(lo)
-                pending_lo = hi
-            continue
-
-        header_match = header_re.match(line)
-        if header_match:
-            finalize_current(current)
-
-            name = header_match.group(1)
-            density_value = float(header_match.group(2))
-            density_unit = header_match.group(3)
-            n_expected = int(header_match.group(4))
-
-            if density_unit == "mg/cm3":
-                density_g_cm3 = density_value / 1000.0
-            elif density_unit == "g/cm3":
-                density_g_cm3 = density_value
-            else:
-                raise ValueError(f"Unsupported density unit '{density_unit}' in line: {line}")
-
-            current = {
-                "name": name,
-                "density_g_cm3": density_g_cm3,
-                "n_expected": n_expected,
-                "elements": [],
-            }
-            continue
-
-        element_match = element_re.match(line)
-        if element_match:
-            if current is None:
-                raise ValueError(f"Found element line before any material header: {line}")
-            element_name = element_match.group(1).strip()
-            weight_fraction = float(element_match.group(2))
-            current["elements"].append(
-                {
-                    "Z": _element_name_to_z(element_name),
-                    "weight_fraction": weight_fraction,
-                }
-            )
-            continue
-
-        raise ValueError(f"Unrecognized Bern material line: {line}")
-
-    finalize_current(current)
-    # Append the final upper boundary
-    if pending_lo is not None:
-        section_boundaries.append(pending_lo)
-
-    for idx, material in enumerate(materials, start=1):
-        material["id"] = idx
-
-    compositions_by_id = {m["id"]: m["elements"] for m in materials}
-    densities_by_id = {m["id"]: m["density_g_cm3"] for m in materials}
-    names_by_id = {m["id"]: m["name"] for m in materials}
-
-    return {
-        "materials": materials,
-        "compositions_by_id": compositions_by_id,
-        "densities_by_id": densities_by_id,
-        "names_by_id": names_by_id,
-        "hu_material_sections": np.asarray(section_boundaries, dtype=np.float32),
-    }
 
 # ---------------------------------------------------------------------------
 
@@ -207,7 +62,7 @@ def run_mcgpu_material_creation(mat_input_dir, mcgpu_output_dir, mcgpu_exe,
 
 # ---------------------------------------------------------------------------
 
-def write_material_list_from_bern(bern_materials, mcgpu_output_dir, material_list_path, material_prefix,
+def write_material_list(bern_materials, mcgpu_output_dir, material_list_path, material_prefix,
                                    e_min_keV=5, e_max_keV=150):
     """Write material_list in MC-GPU format using Bern densities."""
     mcgpu_output_dir = Path(mcgpu_output_dir).resolve()
