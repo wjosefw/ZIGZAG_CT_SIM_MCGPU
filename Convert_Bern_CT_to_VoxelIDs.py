@@ -9,11 +9,11 @@ from bern_materials_db import HU_SECTIONS
 from Utils_Materials import convert_attenuation_map_to_hu, read_nii
 
 
-def main(input_path, output_path=None, output_voxel_path=None, output_blank_path=None, kVp=100):
+def main(input_path, kVp=100):
     input_path = Path(input_path)
-    output_path = Path(output_path) if output_path else input_path.with_name(input_path.stem + "_HU.bin")
-    output_voxel_path = Path(output_voxel_path) if output_voxel_path else input_path.with_name(input_path.stem + "_voxelId.bin")
-    output_blank_path = Path(output_blank_path) if output_blank_path else input_path.with_name(input_path.stem + "_blank.bin")
+    output_path = input_path.with_name(input_path.stem + "_HU.bin")
+    output_voxel_path = input_path.with_name(input_path.stem + "_voxelId.bin")
+    output_blank_path = input_path.with_name(input_path.stem + "_blank.bin")
 
     # Load .nii attenuation map
     att, (zax, yax, xax) = read_nii(input_path)
@@ -70,10 +70,6 @@ if __name__ == "__main__":
         description="Convert Bern CT .nii attenuation map to HU and voxelId maps."
     )
     parser.add_argument("--input", type=Path, required=True, help="Path to the .nii attenuation file")
-    parser.add_argument("--output-hu", type=Path, default=None, help="Output path for int16 HU file")
-    parser.add_argument("--output-voxel", type=Path, default=None, help="Output path for uint8 voxelId file")
-    parser.add_argument("--output-blank", type=Path, default=None, help="Output path for blank (all-zero) phantom file")
     parser.add_argument("--kVp", type=int, default=100, help="CT tube voltage for attenuation→HU conversion (default: 100)")
     args = parser.parse_args()
-    main(args.input, output_path=args.output_hu, output_voxel_path=args.output_voxel,
-         output_blank_path=args.output_blank, kVp=args.kVp)
+    main(args.input, kVp=args.kVp)
