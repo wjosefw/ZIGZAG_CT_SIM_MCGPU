@@ -6,12 +6,14 @@ import array_api_compat.cupy as xp
 # import array_api_compat.numpy as xp
 # import array_api_compat.torch as xp
 
+import parallelproj
 from array_api_compat import to_device
 from utils import sirt
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--listmode_file", required=True, help="Path to listmode .npy file")
+    parser.add_argument("--phantom_file", default=None, help="Optional path to phantom .raw file (uint8, stored as (z,y,x)) to reconstruct via analytical forward projection instead of the listmode data column")
     parser.add_argument("--img_size",    required=True, nargs=3, type=int,   metavar=("N0", "N1", "N2"), help="Image dimensions in voxels")
     parser.add_argument("--voxel_size",  required=True, nargs=3, type=float, metavar=("DX", "DY", "DZ"), help="Voxel size in cm")
     parser.add_argument("--img_origin",  required=True, nargs=3, type=float, metavar=("X0", "Y0", "Z0"), help="World coordinate of center of voxel [0,0,0] in cm")
@@ -53,3 +55,24 @@ if __name__ == "__main__":
     x_np = np.transpose(np.asarray(x.get(), dtype=np.float32), (2, 1, 0))
     x_np.tofile("recon.raw")
     print(f"Saved recon.raw  shape={x_np.shape}  dtype={x_np.dtype}")
+
+    # ── Optional analytical reconstruction from forward-projected phantom ───────
+    if args.phantom_file is not None:
+        # Transposes are just a convention: phantoms are stored as (z,y,x) so reshape as (n2,n1,n0), then transpose (2,1,0) to (x,y,z) for parallelproj
+        phantom = np.fromfile(args.phantom_file, dtype=np.uint8).reshape((n2, n1, n0))
+        phantom = np.transpose(phantom, (2, 1, 0)).copy()
+        phantom = to_device(xp.asarray(phantom, dtype=xp.float32), dev)
+        y_analytical = parallelproj.joseph3d_fwd(xstart, xend, phantom, img_origin, voxel_size)
+        print(f"Processing Analytical Recon...")
+
+        x_analytical = sirt(
+            xstart, xend, y_analytical, img_dim, img_origin, voxel_size,
+            num_iter=args.num_iter,
+            relaxation=args.relaxation,
+            monitor_every=5,
+            relres_tol=args.relres_tol,
+        )
+
+        x_analytical_np = np.transpose(np.asarray(x_analytical.get(), dtype=np.float32), (2, 1, 0))
+        x_analytical_np.tofile("analytical_recon.raw")
+        print(f"Saved analytical_recon.raw  shape={x_analytical_np.shape}  dtype={x_analytical_np.dtype}")
