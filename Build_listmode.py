@@ -142,12 +142,15 @@ def main(results_dir, results_root, blank_results_root, signal_channel):
         rows[:, 6] = val_flat
 
         all_rows.append(rows)
-        # Raw counts: [total (scatter+primary), primary, blank] -- shape (nx, nz, 3)
+
+        # Save raw counts: [total (scatter+primary), primary, blank] -- shape (nx, nz, 3)
         raw_counts = np.stack(
             [phantom_both[:, :, 0], phantom_both[:, :, 1], blank_both[:, :, 0]],
             axis=2,
         )
         projection_images.append(raw_counts)
+        
+        # Construct projection geometry object. 
         # u/v pixel-step vectors in world coordinates (same convention as
         # zigzag_3d ASTRA vectors: u = pix_size_x * x_det,
         #                          v = pix_size_z * z_det)
