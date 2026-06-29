@@ -343,6 +343,7 @@ def select_sweep_subsets(header_files, z_step, zmin, zmax):
     z_margin : float [cm]
     """
     all_entries = []   # (sweep_idx, proj_idx, source_pos, direction)
+    nx = nz = None   # all headers are assumed to share the same detector size
 
     # Parse all header files to get projections info
     for hf in header_files:
@@ -353,7 +354,13 @@ def select_sweep_subsets(header_files, z_step, zmin, zmax):
         proj_idx  = int(m.group(2))   # 1-based
 
         info = parse_header(hf)
-        nx, nz = info['nx'], info['nz']
+        
+        # Get detector size and assert they are all the same
+        if nx is None:
+            nx, nz = info['nx'], info['nz']
+        else:
+            assert (info['nx'], info['nz']) == (nx, nz), f"detector size mismatch in {hf}"
+        
         all_entries.append((sweep_idx, proj_idx, info['source_pos'], info['direction']))
 
     # Get boolean mask to filter only thos insede the z margin
