@@ -231,7 +231,7 @@ def compute_euler_angles(dir_x, dir_y, dir_z):
 
 
 def subsample_slicewise(vectors, xax, yax, zmin=-100, zmax=100,
-                         D_size=(1000, 50), D_z=1, SOD=650, ODD=450,
+                         detector_height_z=50, SOD=650, ODD=450,
                          return_mask=False):
     """
     Filter rows of *vectors* whose Z coordinate (column 2) falls within
@@ -239,19 +239,17 @@ def subsample_slicewise(vectors, xax, yax, zmin=-100, zmax=100,
 
     Parameters
     ----------
-    vectors   : (N, ≥3) array — column 2 must be source Z [cm]
-    xax, yax  : phantom spatial axes [cm]
-    D_size    : (det_cols, det_rows)
-    D_z       : detector pixel height [cm]
-    SOD, ODD  : source-to-object and object-to-detector distances [cm]
-    return_mask : if True, return (filtered_vectors, bool_mask)
+    vectors           : (N, ≥3) array — column 2 must be source Z [cm]
+    xax, yax          : phantom spatial axes [cm]
+    detector_height_z : total detector height along Z [cm]
+    SOD, ODD          : source-to-object and object-to-detector distances [cm]
+    return_mask       : if True, return (filtered_vectors, bool_mask)
 
     Returns
     -------
     filtered_vectors [, bool_mask]
     """
-    D_Z = D_size[1]
-    phi = np.arctan2(D_Z * D_z / 2, SOD + ODD)
+    phi = np.arctan2(detector_height_z / 2, SOD + ODD)
     xmax_ext = np.max([np.abs(xax[0]), np.abs(xax[-1])])
     ymax_ext = np.max([np.abs(yax[0]), np.abs(yax[-1])])
     maxmax = np.max([xmax_ext, ymax_ext])
@@ -343,7 +341,6 @@ def select_sweep_subsets(header_files, z_step, zmin, zmax):
     z_margin : float [cm]
     """
     all_entries = []   # (sweep_idx, proj_idx, source_pos, direction)
-    nx = nz = None   # all headers are assumed to share the same detector size
 
     # Parse all header files to get projections info
     for hf in header_files:
@@ -354,22 +351,13 @@ def select_sweep_subsets(header_files, z_step, zmin, zmax):
         proj_idx  = int(m.group(2))   # 1-based
 
         info = parse_header(hf)
-        
-        # Get detector size and assert they are all the same
-        if nx is None:
-            nx, nz = info['nx'], info['nz']
-        else:
-            assert (info['nx'], info['nz']) == (nx, nz), f"detector size mismatch in {hf}"
-        
         all_entries.append((sweep_idx, proj_idx, info['source_pos'], info['direction']))
 
     # Get boolean mask to filter only thos insede the z margin
     all_positions = np.array([e[2] for e in all_entries])   # (N, 3)
 
-    D_z    = Sim_config.DETECTOR_HEIGHT_Z / nz
-    SOD    = Sim_config.SOD
-    ODD    = Sim_config.SDD - SOD
-    D_size = (nx, nz)
+    SOD = Sim_config.SOD
+    ODD = Sim_config.SDD - SOD
 
     xax = np.array([Sim_config.PHANTOM_OFFSET_X, Sim_config.PHANTOM_OFFSET_X + Sim_config.PHANTOM_NX * Sim_config.VOXEL_SIZE_X])
     yax = np.array([Sim_config.PHANTOM_OFFSET_Y, Sim_config.PHANTOM_OFFSET_Y + Sim_config.PHANTOM_NY * Sim_config.VOXEL_SIZE_Y])
@@ -377,7 +365,7 @@ def select_sweep_subsets(header_files, z_step, zmin, zmax):
     _, bool_mask, z_margin = subsample_slicewise(
         all_positions, xax, yax,
         zmin=zmin, zmax=zmax,
-        D_size=D_size, D_z=D_z,
+        detector_height_z=Sim_config.DETECTOR_HEIGHT_Z,
         SOD=SOD, ODD=ODD,
         return_mask=True,
     )
